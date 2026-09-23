@@ -129,21 +129,25 @@ export async function fetchDashboardData() {
     webApps: dashboardResources
       .filter((resource) => resource.type === 'webapp')
       .map((resource) => ({
+        id: resource.id == null ? undefined : String(resource.id),
         title: resource.title ?? 'Portal App',
         subtitle: resource.subtitle ?? 'Portal access',
         accent: resource.accent ?? '#0284c7',
         access: normalizeAccessList(resource.required_role),
+        url: resource.url,
       })),
     departments: departments.map(buildDepartmentCard),
     reports: dashboardResources
-      .filter((resource) => resource.type === 'report' || resource.type === 'form')
+      .filter((resource) => resource.type === 'report' || resource.type === 'form' || resource.type === 'sheet')
       .map((resource) => ({
+        id: resource.id == null ? undefined : String(resource.id),
         title: resource.title ?? 'Report',
         subtitle: resource.subtitle ?? 'Portal report',
-        meta: normalizeMeta(resource.type === 'form' ? 'form' : 'report'),
+        meta: resource.type === 'form' ? 'Form' as const : resource.type === 'sheet' ? 'Sheet' as const : normalizeMeta('report'),
         accent: resource.accent ?? '#22c55e',
         role: normalizePortalRole(resource.required_role ?? 'User'),
         category: 'Report' as const,
+        url: resource.url,
       })),
     adminResources: dashboardResources
       .filter((resource) => resource.type === 'admin' || normalizePortalRole(resource.required_role ?? 'User') === 'Admin')
@@ -265,6 +269,25 @@ export async function fetchAdminUsers() {
   return requestBackend<Array<Record<string, unknown>>>('/api/admin/users', 'GET');
 }
 
+export type AdminResourceRecord = {
+  id: string;
+  title: string;
+  description: string;
+  type: 'webapp' | 'report' | 'form' | 'sheet';
+  url: string;
+  icon: string;
+  department_id: string | null;
+  required_role: 'Admin' | 'Manager' | 'Supervisor' | 'User';
+};
+
+export async function fetchAdminResources() {
+  return requestBackend<AdminResourceRecord[]>('/api/admin/resources', 'GET');
+}
+
+export async function fetchAdminDepartments() {
+  return requestBackend<Array<{ id: string; name: string; sort_order: number }>>('/api/admin/departments', 'GET');
+}
+
 export async function createAdminUser(user: AdminUserPayload) {
   return requestBackend<Record<string, unknown>>('/api/admin/users', 'POST', {
     employee_id: user.employeeId,
@@ -348,15 +371,17 @@ export async function deleteModule(id: string) {
   return requestBackend<Record<string, unknown>>(`/api/modules/${encodeURIComponent(id)}`, 'DELETE');
 }
 
-export async function createResourceRecord(resource: {
+export type ResourceMutation = {
   title: string;
   description?: string;
-  type: 'webapp' | 'report' | 'form';
-  url?: string;
+  type: 'webapp' | 'report' | 'form' | 'sheet';
+  url?: string | null;
   icon?: string;
   department_id?: string | null;
   required_role?: string;
-}) {
+};
+
+export async function createResourceRecord(resource: ResourceMutation) {
   return requestBackend<Record<string, unknown>>('/api/admin/resources', 'POST', {
     title: resource.title,
     description: resource.description ?? '',
@@ -368,15 +393,7 @@ export async function createResourceRecord(resource: {
   });
 }
 
-export async function updateResourceRecord(resourceId: string, updates: {
-  title?: string;
-  description?: string;
-  type?: 'webapp' | 'report' | 'form';
-  url?: string | null;
-  icon?: string;
-  department_id?: string | null;
-  required_role?: string;
-}) {
+export async function updateResourceRecord(resourceId: string, updates: Partial<ResourceMutation>) {
   return requestBackend<Record<string, unknown>>(`/api/admin/resources/${encodeURIComponent(resourceId)}`, 'PUT', updates);
 }
 

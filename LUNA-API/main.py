@@ -193,13 +193,6 @@ def require_admin(credentials: HTTPAuthorizationCredentials = Depends(security))
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
 
-    role = str(payload.get("role") or "User")
-    if role != "Admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required",
-        )
-
     employee_id = payload.get("sub")
     if not employee_id:
         raise HTTPException(
@@ -221,6 +214,12 @@ def require_admin(credentials: HTTPAuthorizationCredentials = Depends(security))
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Inactive user account",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if str(current_user.get("role") or "User") != "Admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
         )
 
     return current_user

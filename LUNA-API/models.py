@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class UserLogin(BaseModel):
@@ -75,6 +75,16 @@ class UserCreate(BaseModel):
     email: Optional[str] = Field(default=None, min_length=3, max_length=160)
     phone: Optional[str] = Field(default=None, min_length=3, max_length=40)
 
+    @field_validator("email")
+    @classmethod
+    def require_luna_email(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        normalized = value.strip()
+        if "@" not in normalized or normalized.rsplit("@", 1)[1].lower() != "luna.co.in":
+            raise ValueError("Employee email must use the @luna.co.in domain")
+        return f"{normalized.rsplit('@', 1)[0]}@luna.co.in"
+
 
 class UserUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=120)
@@ -84,3 +94,13 @@ class UserUpdate(BaseModel):
     active: Optional[bool] = None
     email: Optional[str] = Field(default=None, min_length=3, max_length=160)
     phone: Optional[str] = Field(default=None, min_length=3, max_length=40)
+
+    @field_validator("email")
+    @classmethod
+    def require_luna_email(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        normalized = value.strip()
+        if "@" not in normalized or normalized.rsplit("@", 1)[1].lower() != "luna.co.in":
+            raise ValueError("Employee email must use the @luna.co.in domain")
+        return f"{normalized.rsplit('@', 1)[0]}@luna.co.in"

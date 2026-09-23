@@ -7,11 +7,9 @@ import Header from '../components/Header';
 import { useAppContext } from '../context/AppContext';
 import type { RootStackParamList } from '../types';
 
-const roleOptions = ['Admin', 'Manager', 'Supervisor', 'User'] as const;
-
 export default function ProfileScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { role, setRole, user, logout } = useAppContext();
+  const { role, user, logout } = useAppContext();
 
   const handleLogout = async () => {
     await logout();
@@ -56,20 +54,6 @@ export default function ProfileScreen() {
             >
               <Text style={styles.actionButtonText}>Employee details</Text>
             </TouchableOpacity>
-          </View>
-
-          <View style={styles.card}>
-            <Text style={styles.sectionTitle}>Role access</Text>
-            {roleOptions.map((option) => (
-              <TouchableOpacity
-                key={option}
-                activeOpacity={0.8}
-                onPress={() => setRole(option)}
-                style={[styles.roleButton, role === option && styles.roleButtonActive]}
-              >
-                <Text style={[styles.roleButtonText, role === option && styles.roleButtonTextActive]}>{option}</Text>
-              </TouchableOpacity>
-            ))}
           </View>
 
           <TouchableOpacity style={styles.logoutButton} onPress={() => void handleLogout()} activeOpacity={0.9}>

@@ -1,6 +1,7 @@
 export type PortalRole = 'Admin' | 'Manager' | 'Supervisor' | 'User';
 
 export type WebAppItem = {
+  id?: string;
   title: string;
   subtitle: string;
   accent: string;
@@ -18,25 +19,19 @@ export type DepartmentItem = {
 };
 
 export type PortalResource = {
+  id?: string;
   title: string;
   subtitle: string;
-  meta: 'Report' | 'Form' | 'Admin';
+  meta: 'Report' | 'Form' | 'Sheet' | 'Admin';
+  url?: string;
   accent: string;
   role: PortalRole | 'All';
   category: 'Web App' | 'Department' | 'Report' | 'Admin';
 };
 
-const DEFAULT_WEBAPP_URLS: Record<string, string> = {
-  'Task Manager': 'https://docs.google.com/forms',
-  'Stock Query': 'https://docs.google.com/spreadsheets',
-  'Packing Photos': 'https://drive.google.com',
-  'Production Board': 'https://www.google.com',
-  'Quality Tracker': 'https://forms.gle',
-};
-
-export const resolveAppUrl = (title: string, fallback?: string) => {
-  const value = fallback?.trim() || DEFAULT_WEBAPP_URLS[title] || 'https://www.google.com';
-  return /^https?:\/\//i.test(value) ? value : `https://${value}`;
+export const resolveAppUrl = (_title: string, fallback?: string) => {
+  const value = fallback?.trim() ?? '';
+  return !value ? '' : /^https?:\/\//i.test(value) ? value : `https://${value}`;
 };
 
 export const webApps: WebAppItem[] = [
