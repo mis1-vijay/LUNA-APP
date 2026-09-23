@@ -1,0 +1,12 @@
+# Node
+node_modules/
+.expo/
+
+# Python
+__pycache__/
+venv/
+env/
+*.pyc
+
+# Environment variables (SABSE IMPORTANT - Secret keys public nahi honi chahiye)
+.env
