@@ -25,8 +25,10 @@ class ResourceResponse(BaseModel):
     id: UUID
     title: str
     description: Optional[str] = None
-    type: str
+    type: Optional[str] = None
+    category: Optional[str] = None
     url: Optional[str] = None
+    link: Optional[str] = None
     icon: Optional[str] = None
     department_id: Optional[UUID] = None
     required_role: Optional[str] = None
@@ -35,8 +37,10 @@ class ResourceResponse(BaseModel):
 class ResourceCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=120)
     description: Optional[str] = None
-    type: str = Field(default="webapp", min_length=1, max_length=50)
+    type: Optional[str] = Field(default="webapp", min_length=1, max_length=50)
+    category: Optional[str] = Field(default=None, min_length=1, max_length=50)
     url: Optional[str] = None
+    link: Optional[str] = None
     icon: Optional[str] = None
     department_id: Optional[UUID] = None
     required_role: Optional[str] = None
@@ -46,7 +50,9 @@ class ResourceUpdate(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1, max_length=120)
     description: Optional[str] = None
     type: Optional[str] = Field(default=None, min_length=1, max_length=50)
+    category: Optional[str] = Field(default=None, min_length=1, max_length=50)
     url: Optional[str] = None
+    link: Optional[str] = None
     icon: Optional[str] = None
     department_id: Optional[UUID] = None
     required_role: Optional[str] = None

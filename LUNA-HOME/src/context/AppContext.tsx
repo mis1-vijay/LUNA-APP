@@ -8,6 +8,7 @@ import {
   type UserRole,
 } from '../services/authService';
 import {
+  createAdminUser,
   deleteAdminUser as deleteAdminUserRemote,
   fetchAdminUsers,
   updateAdminUser as updateAdminUserRemote,
@@ -25,6 +26,17 @@ export type AdminManagedUser = {
   password?: string;
 };
 
+export type CustomModule = {
+  id: string;
+  type: 'webApp' | 'department' | 'report' | 'resource' | 'webapp' | 'form' | 'module' | 'tiny';
+  title: string;
+  subtitle: string;
+  accent: string;
+  link: string;
+  access: string[];
+  department?: string;
+};
+
 type AppContextValue = {
   role: UserRole;
   user: SessionUser | null;
@@ -39,9 +51,13 @@ type AppContextValue = {
   addAdminUser: (newUser: AdminManagedUser) => Promise<void>;
   updateAdminUser: (id: string, updates: Partial<AdminManagedUser>) => Promise<void>;
   deleteAdminUser: (id: string) => Promise<void>;
+  customModules: CustomModule[];
+  addCustomModule: (module: CustomModule) => void;
+  removeCustomModule: (moduleId: string) => void;
 };
 
 const FAVORITES_KEY = 'luna-favorites';
+const CUSTOM_MODULES_KEY = 'luna-custom-modules';
 
 const AppContext = createContext<AppContextValue | undefined>(undefined);
 
@@ -51,14 +67,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [adminUsers, setAdminUsers] = useState<AdminManagedUser[]>([]);
+  const [customModules, setCustomModules] = useState<CustomModule[]>([]);
 
   useEffect(() => {
     const loadSession = async () => {
       const savedUser = await loadStoredSession();
       const storedFavorites = await AsyncStorage.getItem(FAVORITES_KEY);
+      const storedCustomModules = await AsyncStorage.getItem(CUSTOM_MODULES_KEY);
 
       if (storedFavorites) {
         setFavorites(JSON.parse(storedFavorites) as string[]);
+      }
+
+      if (storedCustomModules) {
+        setCustomModules(JSON.parse(storedCustomModules) as CustomModule[]);
       }
 
       if (!savedUser) {
@@ -79,6 +101,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     void AsyncStorage.setItem(FAVORITES_KEY, JSON.stringify(favorites));
   }, [favorites]);
+
+  useEffect(() => {
+    void AsyncStorage.setItem(CUSTOM_MODULES_KEY, JSON.stringify(customModules));
+  }, [customModules]);
 
   const login = async (employeeId: string, password: string) => {
     const result = await signIn(employeeId, password);
@@ -164,6 +190,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     await refreshAdminUsers();
   };
 
+  const addCustomModule = (module: CustomModule) => {
+    setCustomModules((current) => {
+      const existingIndex = current.findIndex((item) => item.id === module.id);
+      if (existingIndex >= 0) {
+        const next = [...current];
+        next[existingIndex] = module;
+        return next;
+      }
+      return [...current, module];
+    });
+  };
+
+  const removeCustomModule = (moduleId: string) => {
+    setCustomModules((current) => current.filter((item) => item.id !== moduleId));
+  };
+
   const value = useMemo(
     () => ({
       role,
@@ -179,8 +221,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       addAdminUser,
       updateAdminUser,
       deleteAdminUser,
+      customModules,
+      addCustomModule,
+      removeCustomModule,
     }),
-    [role, user, isAuthenticated, favorites, adminUsers],
+    [role, user, isAuthenticated, favorites, adminUsers, customModules],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

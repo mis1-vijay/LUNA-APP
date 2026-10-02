@@ -12,8 +12,10 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { type NativeStackScreenProps } from '@react-navigation/native-stack';
 import Header from '../components/Header';
+import EmptyState from '../components/EmptyState';
+import ErrorState from '../components/ErrorState';
 import { useAppContext, type AdminManagedUser, type CustomModule } from '../context/AppContext';
-import { deleteModule, updateModule } from '../services/portalApi';
+import { createModule, deleteModule, updateModule } from '../services/portalApi';
 import type { RootStackParamList } from '../types';
 
 const roleOptions = ['Admin', 'Manager', 'Supervisor', 'User'] as const;
@@ -24,7 +26,7 @@ type AdminConsoleScreenProps = NativeStackScreenProps<RootStackParamList, 'Admin
 export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenProps) {
   const { addCustomModule, addAdminUser, adminUsers, refreshAdminUsers, updateAdminUser, deleteAdminUser, role, customModules, removeCustomModule } = useAppContext();
   const [activeTab, setActiveTab] = useState<'modules' | 'users'>('modules');
-  const [moduleType, setModuleType] = useState<'webApp' | 'department' | 'report' | 'resource'>('webApp');
+  const [moduleType, setModuleType] = useState<'webapp' | 'form' | 'module' | 'report' | 'department' | 'tiny'>('webapp');
   const [moduleName, setModuleName] = useState('');
   const [moduleSubtitle, setModuleSubtitle] = useState('');
   const [moduleLink, setModuleLink] = useState('');
@@ -32,6 +34,8 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
   const [editingModuleId, setEditingModuleId] = useState<string | null>(null);
   const [savingModule, setSavingModule] = useState(false);
   const [deletingModuleId, setDeletingModuleId] = useState<string | null>(null);
+  const [userLoading, setUserLoading] = useState(true);
+  const [userError, setUserError] = useState<string | null>(null);
   const [userName, setUserName] = useState('');
   const [employeeId, setEmployeeId] = useState('');
   const [userDepartment, setUserDepartment] = useState('Packing');
@@ -52,17 +56,41 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
     [adminUsers],
   );
 
-  useEffect(() => {
+  const loadUsers = async () => {
     if (!canManage) {
       return;
     }
 
-    void refreshAdminUsers();
+    setUserLoading(true);
+    setUserError(null);
+
+    try {
+      await refreshAdminUsers();
+    } catch (error) {
+      setUserError(error instanceof Error ? error.message : 'Unable to load user data.');
+    } finally {
+      setUserLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!canManage) {
+      setUserLoading(false);
+      setUserError(null);
+      return;
+    }
+
+    void loadUsers();
   }, [canManage, refreshAdminUsers]);
 
   const handleAddModule = async () => {
     if (!moduleName.trim()) {
       Alert.alert('Missing module name', 'Please add a module name before saving.');
+      return;
+    }
+
+    if (!moduleLink.trim()) {
+      Alert.alert('Destination link required', 'Enter the destination URL/link before saving this item.');
       return;
     }
 
@@ -80,12 +108,16 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
     setSavingModule(true);
 
     try {
+      const resourceType = moduleType === 'webapp' ? 'webapp' : moduleType === 'form' ? 'form' : moduleType === 'report' ? 'report' : moduleType === 'module' ? 'module' : moduleType === 'department' ? 'department' : 'tiny';
+
       if (editingModuleId) {
         await updateModule(editingModuleId, {
           title: newModule.title,
           description: newModule.subtitle,
-          type: newModule.type === 'webApp' ? 'webapp' : newModule.type === 'report' ? 'report' : 'form',
+          type: resourceType,
+          category: resourceType,
           url: newModule.link,
+          link: newModule.link,
           icon: newModule.accent,
           required_role: 'User',
         });
@@ -93,7 +125,18 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
         addCustomModule(newModule);
         Alert.alert('Module updated', `${newModule.title} has been updated.`);
       } else {
-        addCustomModule(newModule);
+        const created = await createModule({
+          title: newModule.title,
+          description: newModule.subtitle,
+          type: resourceType,
+          category: resourceType,
+          url: newModule.link,
+          link: newModule.link,
+          icon: newModule.accent,
+          required_role: 'User',
+        });
+        const createdId = typeof created?.id === 'string' ? created.id : newModule.id;
+        addCustomModule({ ...newModule, id: createdId });
         Alert.alert('Module added', `${newModule.title} is now available in the portal.`);
       }
 
@@ -101,7 +144,7 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
       setModuleName('');
       setModuleSubtitle('');
       setModuleLink('');
-      setModuleType('webApp');
+      setModuleType('webapp');
       setModuleAccent(accentPalette[0]);
     } catch (error) {
       Alert.alert('Network error', error instanceof Error ? error.message : 'Unable to save the module.');
@@ -112,7 +155,21 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
 
   const beginModuleEdit = (module: CustomModule) => {
     setEditingModuleId(module.id);
-    setModuleType(module.type);
+    setModuleType(
+      module.type === 'webApp'
+        ? 'webapp'
+        : module.type === 'report'
+          ? 'report'
+          : module.type === 'resource'
+            ? 'module'
+            : module.type === 'form'
+              ? 'form'
+              : module.type === 'department'
+                ? 'department'
+                : module.type === 'tiny'
+                  ? 'tiny'
+                  : 'webapp',
+    );
     setModuleName(module.title);
     setModuleSubtitle(module.subtitle);
     setModuleLink(module.link);
@@ -315,7 +372,7 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
             />
 
             <View style={styles.pillRow}>
-              {(['webApp', 'department', 'report', 'resource'] as const).map((option) => (
+              {(['webapp', 'form', 'module', 'report', 'department', 'tiny'] as const).map((option) => (
                 <TouchableOpacity
                   key={option}
                   onPress={() => setModuleType(option)}
@@ -345,7 +402,7 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
             <View style={styles.card}>
               <Text style={styles.sectionTitle}>Existing modules</Text>
               {customModules.length === 0 ? (
-                <Text style={styles.emptyStateText}>No custom modules yet.</Text>
+                <EmptyState title="No custom modules" message="Create your first portal module to get started." />
               ) : (
                 customModules.map((module) => (
                   <View key={module.id} style={styles.moduleRow}>
@@ -452,39 +509,56 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
                   <Text style={styles.linkText}>+ Add</Text>
                 </TouchableOpacity>
               </View>
-              {adminUsers.map((person) => (
-                <View key={person.id} style={styles.userCard}>
-                  <TouchableOpacity onPress={() => fillUserEditor(person)} activeOpacity={0.9} style={styles.userMain}>
-                    <View style={styles.avatarCircle}>
-                      <Text style={styles.avatarText}>{person.name.charAt(0).toUpperCase()}</Text>
-                    </View>
-                    <View style={styles.userMeta}>
-                      <Text style={styles.userName}>{person.name}</Text>
-                      <Text style={styles.userRole}>{person.role}</Text>
-                      <Text style={styles.userDetail}>{person.employeeId} • {person.department}</Text>
-                    </View>
-                  </TouchableOpacity>
 
-                  <View style={styles.userActions}>
-                    <TouchableOpacity
-                      onPress={() => updateAdminUser(person.id, { active: !person.active })}
-                      style={[styles.statusPill, person.active ? styles.statusActive : styles.statusInactive]}
-                      activeOpacity={0.8}
-                    >
-                      <Text style={styles.statusText}>{person.active ? 'Active' : 'Inactive'}</Text>
+              {userLoading ? (
+                <View style={styles.loadingWrapper}>
+                  <ActivityIndicator size="small" color="#5e1232" />
+                  <Text style={styles.loadingText}>Loading users…</Text>
+                </View>
+              ) : userError ? (
+                <View style={styles.errorWrapper}>
+                  <ErrorState title="User roster unavailable" message={userError} />
+                  <TouchableOpacity style={styles.retryButton} onPress={() => { void loadUsers(); }} activeOpacity={0.9}>
+                    <Text style={styles.retryButtonText}>Retry</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : adminUsers.length === 0 ? (
+                <EmptyState title="No users found" message="Add the first employee to build the roster." />
+              ) : (
+                adminUsers.map((person) => (
+                  <View key={person.id} style={styles.userCard}>
+                    <TouchableOpacity onPress={() => fillUserEditor(person)} activeOpacity={0.9} style={styles.userMain}>
+                      <View style={styles.avatarCircle}>
+                        <Text style={styles.avatarText}>{person.name.charAt(0).toUpperCase()}</Text>
+                      </View>
+                      <View style={styles.userMeta}>
+                        <Text style={styles.userName}>{person.name}</Text>
+                        <Text style={styles.userRole}>{person.role}</Text>
+                        <Text style={styles.userDetail}>{person.employeeId} • {person.department}</Text>
+                      </View>
                     </TouchableOpacity>
 
-                    <View style={styles.quickActions}>
-                      <TouchableOpacity onPress={() => fillUserEditor(person)} style={[styles.iconButton, styles.editButton]} activeOpacity={0.8}>
-                        <Text style={styles.iconButtonText}>Edit</Text>
+                    <View style={styles.userActions}>
+                      <TouchableOpacity
+                        onPress={() => updateAdminUser(person.id, { active: !person.active })}
+                        style={[styles.statusPill, person.active ? styles.statusActive : styles.statusInactive]}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={styles.statusText}>{person.active ? 'Active' : 'Inactive'}</Text>
                       </TouchableOpacity>
-                      <TouchableOpacity onPress={() => handleDeleteUser(person)} style={[styles.iconButton, styles.deleteButton]} activeOpacity={0.8}>
-                        <Text style={styles.iconButtonText}>Delete</Text>
-                      </TouchableOpacity>
+
+                      <View style={styles.quickActions}>
+                        <TouchableOpacity onPress={() => fillUserEditor(person)} style={[styles.iconButton, styles.editButton]} activeOpacity={0.8}>
+                          <Text style={styles.iconButtonText}>Edit</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity onPress={() => handleDeleteUser(person)} style={[styles.iconButton, styles.deleteButton]} activeOpacity={0.8}>
+                          <Text style={styles.iconButtonText}>Delete</Text>
+                        </TouchableOpacity>
+                      </View>
                     </View>
                   </View>
-                </View>
-              ))}
+                ))
+              )}
             </View>
           </>
         )}
@@ -679,6 +753,32 @@ const styles = StyleSheet.create({
     color: '#64748b',
     fontSize: 14,
     marginTop: 8,
+  },
+  loadingWrapper: {
+    paddingVertical: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadingText: {
+    color: '#475569',
+    fontSize: 13,
+    fontWeight: '700',
+    marginTop: 8,
+  },
+  errorWrapper: {
+    paddingTop: 8,
+  },
+  retryButton: {
+    marginTop: 14,
+    backgroundColor: '#5e1232',
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    alignItems: 'center',
+  },
+  retryButtonText: {
+    color: '#ffffff',
+    fontWeight: '700',
   },
   moduleRow: {
     flexDirection: 'row',

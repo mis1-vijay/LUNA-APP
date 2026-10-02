@@ -75,21 +75,29 @@ export default function LoginScreen({ navigation }: LoginScreenProps) {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={styles.keyboardView}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 30 : 0}
-      >
+    <KeyboardAvoidingView
+      style={{ flex: 1 }}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 30 : 0}
+    >
+      <SafeAreaView style={styles.container}>
         <ScrollView
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
+          bounces={false}
         >
           <View style={styles.header}>
             <Image source={lunaLogo} style={styles.logoPlaceholder} resizeMode="contain" />
-            <Text style={styles.title}>LUNA TECHNOLOGIES</Text>
-            <Text style={styles.subtitle}>PVT LTD • Internal Company Portal</Text>
+            <Text
+              style={styles.title}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.75}
+            >
+              LUNA TECHNOLOGIES PVT. LTD.
+            </Text>
+            <Text style={styles.subtitle}>Internal Company Portal</Text>
           </View>
 
           <View style={styles.form}>
@@ -139,8 +147,8 @@ export default function LoginScreen({ navigation }: LoginScreenProps) {
             </TouchableOpacity>
           </View>
         </ScrollView>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+      </SafeAreaView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -148,11 +156,17 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#f8fafc',
+  },
+  scrollContent: {
+    flexGrow: 1,
     justifyContent: 'center',
+    paddingTop: 12,
+    paddingBottom: 72,
   },
   header: {
     alignItems: 'center',
-    marginBottom: 40,
+    marginBottom: 26,
+    marginTop: 0,
   },
   logoPlaceholder: {
     width: 90,
@@ -165,25 +179,26 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 28,
-    fontWeight: '800',
+    fontWeight: '900',
     color: '#0f172a',
-    letterSpacing: 1,
+    letterSpacing: 0.2,
+    textAlign: 'center',
+    includeFontPadding: false,
+    marginHorizontal: 8,
+    lineHeight: 30,
   },
   subtitle: {
-    fontSize: 16,
+    fontSize: 18,
     color: '#475569',
-    marginTop: 6,
-  },
-  keyboardView: {
-    flex: 1,
-  },
-  scrollContent: {
-    flexGrow: 1,
-    justifyContent: 'center',
-    paddingBottom: 32,
+    marginTop: 8,
+    fontWeight: '500',
+    letterSpacing: 0.2,
+    textAlign: 'center',
   },
   form: {
     paddingHorizontal: 35,
+    marginTop: 10,
+    paddingBottom: 12,
   },
   input: {
     backgroundColor: '#ffffff',

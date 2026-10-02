@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Linking,
   Modal,
@@ -13,6 +14,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { type NativeStackScreenProps } from '@react-navigation/native-stack';
 import Header from '../components/Header';
+import EmptyState from '../components/EmptyState';
+import ErrorState from '../components/ErrorState';
 import { useAppContext, type CustomModule } from '../context/AppContext';
 import { RootStackParamList } from '../types';
 
@@ -22,10 +25,18 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
   const { department } = route.params;
   const { addCustomModule, customModules } = useAppContext();
   const [isAddOpen, setIsAddOpen] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [newTitle, setNewTitle] = useState('');
   const [newSubtitle, setNewSubtitle] = useState('');
   const [newLink, setNewLink] = useState('');
   const [newType, setNewType] = useState<'webApp' | 'report' | 'resource'>('resource');
+
+  useEffect(() => {
+    setLoadError(null);
+    const timeout = setTimeout(() => setIsLoading(false), 150);
+    return () => clearTimeout(timeout);
+  }, [department, customModules.length]);
 
   const departmentModules = useMemo(
     () =>
@@ -42,6 +53,11 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
   const handleAddResource = () => {
     if (!newTitle.trim()) {
       Alert.alert('Missing title', 'Enter a resource name before saving.');
+      return;
+    }
+
+    if (!newLink.trim()) {
+      Alert.alert('Destination link required', 'Enter a valid URL/link before saving this resource.');
       return;
     }
 
@@ -63,6 +79,32 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
     setNewLink('');
     setNewType('resource');
   };
+
+  if (isLoading) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <Header />
+        <View style={styles.centeredState}>
+          <ActivityIndicator size="large" color="#5e1232" />
+          <Text style={styles.loadingText}>Loading department resources…</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <Header />
+        <View style={styles.centeredState}>
+          <ErrorState title="Unable to load department" message={loadError} />
+          <TouchableOpacity style={styles.retryButton} onPress={() => setIsLoading(true)} activeOpacity={0.9}>
+            <Text style={styles.retryButtonText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -106,14 +148,13 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
             departmentModules.map((item) => (
               <TouchableOpacity
                 key={item.id}
-                onPress={() => {
-                  if (item.link && /^https?:\/\//i.test(item.link)) {
-                    navigation.navigate('WebAppDetail', {
-                      appName: item.title,
-                      appSubtitle: item.subtitle,
-                      accent: item.accent,
-                      url: item.link,
-                    });
+                onPress={async () => {
+                  try {
+                    if (item.link && /^https?:\/\//i.test(item.link)) {
+                      await Linking.openURL(item.link);
+                    }
+                  } catch (error) {
+                    Alert.alert('Unable to open link', error instanceof Error ? error.message : 'The selected resource could not be opened.');
                   }
                 }}
                 activeOpacity={0.8}
@@ -127,9 +168,10 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
               </TouchableOpacity>
             ))
           ) : (
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyStateText}>No resources added yet. Tap + Add to create your first item for this department.</Text>
-            </View>
+            <EmptyState
+              title="No resources yet"
+              message="Tap + Add to create your first item for this department."
+            />
           )}
         </View>
       </ScrollView>
@@ -194,6 +236,30 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: '#f8fafc',
+  },
+  centeredState: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    backgroundColor: '#f8fafc',
+  },
+  loadingText: {
+    color: '#0f172a',
+    fontSize: 14,
+    fontWeight: '700',
+    marginTop: 12,
+  },
+  retryButton: {
+    marginTop: 18,
+    backgroundColor: '#5e1232',
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: 10,
+  },
+  retryButtonText: {
+    color: '#ffffff',
+    fontWeight: '700',
   },
   container: {
     flexGrow: 1,

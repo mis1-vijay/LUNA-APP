@@ -225,10 +225,103 @@ def require_admin(credentials: HTTPAuthorizationCredentials = Depends(security))
     return current_user
 
 
+def normalize_resource_kind(value: Optional[str]) -> str:
+    candidate = (value or "webapp").strip().lower()
+    if not candidate:
+        return "webapp"
+
+    normalized = (
+        candidate
+        .replace("-", "_")
+        .replace(" ", "_")
+        .replace("/", "_")
+        .replace(".", "_")
+    )
+
+    aliases = {
+        "webapp": "webapp",
+        "web_app": "webapp",
+        "web": "webapp",
+        "app": "webapp",
+        "form": "form",
+        "forms": "form",
+        "report": "report",
+        "reports": "report",
+        "sheet": "sheet",
+        "sheets": "sheet",
+        "module": "module",
+        "modules": "module",
+        "custom_module": "module",
+        "custom_modules": "module",
+        "resource": "module",
+        "resources": "module",
+        "department": "department",
+        "departments": "department",
+        "tiny": "tiny",
+        "tiny_element": "tiny",
+        "tiny_elements": "tiny",
+        "admin": "admin",
+    }
+
+    return aliases.get(normalized, normalized)
+
+
+def normalize_required_role(value: Optional[str]) -> str:
+    if value is None:
+        return "User"
+
+    candidate = str(value).strip()
+    if not candidate:
+        return "User"
+
+    normalized = candidate.lower()
+    aliases = {
+        "employee": "User",
+        "staff": "User",
+        "user": "User",
+        "supervisor": "Supervisor",
+        "manager": "Manager",
+        "admin": "Admin",
+    }
+    return aliases.get(normalized, candidate.title())
+
+
+def normalize_resource_payload(data: Dict[str, Any], apply_defaults: bool = False) -> Dict[str, Any]:
+    payload = {key: value for key, value in data.items() if value is not None}
+    if "category" in payload and not payload.get("category"):
+        payload.pop("category")
+    if "type" in payload and not payload.get("type"):
+        payload.pop("type")
+
+    if "link" in payload and "url" not in payload:
+        payload["url"] = payload["link"]
+    elif "link" in payload and payload["link"]:
+        payload["url"] = payload["link"]
+
+    if "url" in payload and payload.get("url"):
+        payload["url"] = str(payload["url"]).strip()
+
+    if "required_role" in payload:
+        payload["required_role"] = normalize_required_role(str(payload["required_role"]))
+    elif "role" in payload:
+        payload["required_role"] = normalize_required_role(str(payload["role"]))
+
+    if "type" in payload or "category" in payload or apply_defaults:
+        type_value = payload.get("type") or payload.get("category") or "webapp"
+        normalized_type = normalize_resource_kind(type_value)
+        payload["type"] = normalized_type
+        payload["category"] = normalized_type
+
+    if apply_defaults:
+        payload.setdefault("required_role", "User")
+
+    return payload
+
+
 def ensure_unique_module_title(supabase: Any, title: str, excluded_id: Optional[str] = None) -> None:
     module_title = (title or "").strip()
     if not module_title:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Module title is required")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Resource title is required")
 
     response = supabase.table("resources").select("id,title").execute()
     for row in response.data or []:
@@ -236,7 +329,7 @@ def ensure_unique_module_title(supabase: Any, title: str, excluded_id: Optional[
         if not existing_title:
             continue
         if existing_title.lower() == module_title.lower() and str(row.get("id")) != str(excluded_id):
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Module name already exists")
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Resource name already exists")
 
 
 def normalize_department_sort_order(supabase: Any) -> None:
@@ -282,8 +375,10 @@ def ensure_seed_data() -> Dict[str, int]:
                 {
                     "title": resource["title"],
                     "description": resource.get("description"),
-                    "type": resource.get("type", "web_app"),
+                    "type": normalize_resource_kind(resource.get("type", "web_app")),
+                    "category": normalize_resource_kind(resource.get("type", "web_app")),
                     "url": resource.get("url"),
+                    "link": resource.get("url"),
                     "icon": resource.get("icon"),
                     "department_id": department["id"],
                     "required_role": resource.get("required_role"),
@@ -405,38 +500,17 @@ def delete_department(department_id: str, current_user: Dict[str, Any] = Depends
 
 @app.post("/api/modules", status_code=status.HTTP_201_CREATED)
 def create_module(payload: ResourceCreate, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
-    supabase = get_supabase()
-    ensure_unique_module_title(supabase, payload.title)
-    response = supabase.table("resources").insert(payload.model_dump()).execute()
-    if not response.data:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Module creation failed")
-    return response.data[0]
+    return create_resource(payload, current_user)
 
 
 @app.put("/api/modules/{module_id}")
 def update_module(module_id: str, payload: ResourceUpdate, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
-    supabase = get_supabase()
-    data = payload.model_dump(exclude_none=True)
-
-    if "title" in data:
-        ensure_unique_module_title(supabase, str(data["title"]), excluded_id=module_id)
-
-    if not data:
-        return {"id": module_id, "updated": False}
-
-    response = supabase.table("resources").update(data).eq("id", module_id).execute()
-    if not response.data:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Module not found")
-    return response.data[0]
+    return update_resource(module_id, payload, current_user)
 
 
 @app.delete("/api/modules/{module_id}")
 def delete_module(module_id: str, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, str]:
-    supabase = get_supabase()
-    response = supabase.table("resources").delete().eq("id", module_id).execute()
-    if not response.data:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Module not found")
-    return {"status": "deleted", "id": module_id}
+    return delete_resource(module_id, current_user)
 
 
 @app.get("/api/admin/resources")
@@ -449,7 +523,9 @@ def list_resources(current_user: Dict[str, Any] = Depends(require_admin)) -> Lis
 @app.post("/api/admin/resources", status_code=status.HTTP_201_CREATED)
 def create_resource(payload: ResourceCreate, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
     supabase = get_supabase()
-    response = supabase.table("resources").insert(payload.model_dump()).execute()
+    data = normalize_resource_payload(payload.model_dump(exclude_none=True), apply_defaults=True)
+    ensure_unique_module_title(supabase, str(data.get("title") or ""))
+    response = supabase.table("resources").insert(data).execute()
     if not response.data:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Resource creation failed")
     return response.data[0]
@@ -458,7 +534,11 @@ def create_resource(payload: ResourceCreate, current_user: Dict[str, Any] = Depe
 @app.put("/api/admin/resources/{resource_id}")
 def update_resource(resource_id: str, payload: ResourceUpdate, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
     supabase = get_supabase()
-    data = {key: value for key, value in payload.model_dump(exclude_none=True).items() if key is not None}
+    data = normalize_resource_payload(payload.model_dump(exclude_none=True))
+
+    if "title" in data:
+        ensure_unique_module_title(supabase, str(data["title"]), excluded_id=resource_id)
+
     if not data:
         return {"id": resource_id, "updated": False}
 
@@ -475,6 +555,26 @@ def delete_resource(resource_id: str, current_user: Dict[str, Any] = Depends(req
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
     return {"status": "deleted", "id": resource_id}
+
+
+@app.get("/api/admin/items")
+def list_items(current_user: Dict[str, Any] = Depends(require_admin)) -> List[Dict[str, Any]]:
+    return list_resources(current_user)
+
+
+@app.post("/api/admin/items", status_code=status.HTTP_201_CREATED)
+def create_item(payload: ResourceCreate, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
+    return create_resource(payload, current_user)
+
+
+@app.put("/api/admin/items/{item_id}")
+def update_item(item_id: str, payload: ResourceUpdate, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
+    return update_resource(item_id, payload, current_user)
+
+
+@app.delete("/api/admin/items/{item_id}")
+def delete_item(item_id: str, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, str]:
+    return delete_resource(item_id, current_user)
 
 
 @app.get("/api/admin/users")

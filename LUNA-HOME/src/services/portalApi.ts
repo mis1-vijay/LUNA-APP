@@ -16,6 +16,7 @@ type DashboardResource = {
   department_id?: number | string | null;
   type?: string;
   url?: string;
+  link?: string;
   icon?: string;
 };
 
@@ -51,6 +52,8 @@ const normalizePortalRole = (value?: string): PortalRole => {
       return 'Manager';
     case 'supervisor':
       return 'Supervisor';
+    case 'employee':
+    case 'user':
     default:
       return 'User';
   }
@@ -79,6 +82,24 @@ const normalizeAccessList = (value?: string | string[]): PortalRole[] => {
   return ['User'];
 };
 
+const normalizeApiError = (error: unknown, fallback = 'Unable to reach the Luna API. Please try again later.') => {
+  if (error instanceof Error) {
+    const message = error.message.trim();
+
+    if (!message) {
+      return fallback;
+    }
+
+    if (/network|failed to fetch|load failed|timed out|connection|unreachable|offline/i.test(message)) {
+      return 'Unable to connect to the Luna API. Please check your connection and try again.';
+    }
+
+    return message;
+  }
+
+  return fallback;
+};
+
 const buildDepartmentCard = (department: DashboardDepartment): { name: string; tags: string[]; accent: string; summary: string; metrics: Array<{ label: string; value: string }>; access: PortalRole[] } => {
   const name = department.name ?? 'Department';
   const roleAccess = normalizeAccessList(department.access);
@@ -94,77 +115,99 @@ const buildDepartmentCard = (department: DashboardDepartment): { name: string; t
 };
 
 export async function fetchDashboardData() {
-  const token = await getAccessToken();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
 
-  if (!token) {
-    throw new Error('No auth token available. Please sign in again.');
-  }
+  try {
+    const token = await getAccessToken();
 
-  const response = await fetch(`${API_BASE_URL}/api/portal/dashboard`, {
-    method: 'GET',
-    headers: {
-      Accept: 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-  });
+    if (!token) {
+      throw new Error('No auth token available. Please sign in again.');
+    }
 
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(body.detail ?? 'Unable to load dashboard data.');
-  }
+    if (!API_BASE_URL) {
+      throw new Error('EXPO_PUBLIC_API_BASE_URL is not configured. Restart the app with start-luna.ps1.');
+    }
 
-  const payload = await response.json();
-  const resources: DashboardResource[] = Array.isArray(payload.resources) ? payload.resources : [];
-  const departments: DashboardDepartment[] = Array.isArray(payload.departments) ? payload.departments : [];
+    const response = await fetch(`${API_BASE_URL}/api/portal/dashboard`, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.detail ?? 'Unable to load dashboard data.');
+    }
+
+    const payload = await response.json();
+    const resources: DashboardResource[] = Array.isArray(payload.resources) ? payload.resources : [];
+    const departments: DashboardDepartment[] = Array.isArray(payload.departments) ? payload.departments : [];
 
   const dashboardResources = resources.map((resource) => ({
     ...resource,
     type: (resource.type ?? resource.category ?? 'report').toString().trim().toLowerCase(),
     required_role: resource.required_role ?? resource.role ?? 'User',
     subtitle: resource.subtitle ?? resource.description ?? 'Portal item',
+    url: resource.url ?? resource.link ?? undefined,
+    link: resource.link ?? resource.url ?? undefined,
     meta: resource.meta ?? (resource.type === 'form' ? 'Form' : resource.type === 'webapp' ? 'Report' : 'Report'),
   }));
 
-  return {
-    webApps: dashboardResources
-      .filter((resource) => resource.type === 'webapp')
-      .map((resource) => ({
-        id: resource.id == null ? undefined : String(resource.id),
-        title: resource.title ?? 'Portal App',
-        subtitle: resource.subtitle ?? 'Portal access',
+    return {
+      webApps: dashboardResources
+        .filter((resource) => resource.type === 'webapp')
+        .map((resource) => ({
+          id: resource.id == null ? undefined : String(resource.id),
+          title: resource.title ?? 'Portal App',
+          subtitle: resource.subtitle ?? 'Portal access',
+          accent: resource.accent ?? '#0284c7',
+          access: normalizeAccessList(resource.required_role),
+          url: resource.url ?? undefined,
+        })),
+      departments: departments.map(buildDepartmentCard),
+      reports: dashboardResources
+        .filter((resource) => resource.type === 'report' || resource.type === 'form' || resource.type === 'sheet')
+        .map((resource) => ({
+          id: resource.id == null ? undefined : String(resource.id),
+          title: resource.title ?? 'Report',
+          subtitle: resource.subtitle ?? 'Portal report',
+          meta: resource.type === 'form' ? 'Form' as const : resource.type === 'sheet' ? 'Sheet' as const : normalizeMeta('report'),
+          accent: resource.accent ?? '#22c55e',
+          role: normalizePortalRole(resource.required_role ?? 'User'),
+          category: 'Report' as const,
+          url: resource.url ?? undefined,
+        })),
+      adminResources: dashboardResources
+        .filter((resource) => resource.type === 'admin' || normalizePortalRole(resource.required_role ?? 'User') === 'Admin')
+        .map((resource) => ({
+          id: resource.id == null ? undefined : String(resource.id),
+          title: resource.title ?? 'Admin Resource',
+          subtitle: resource.subtitle ?? 'Admin access',
+          meta: 'Admin' as const,
+          accent: resource.accent ?? '#0f172a',
+          role: normalizePortalRole(resource.required_role ?? 'Admin'),
+          category: 'Admin' as const,
+          url: resource.url ?? undefined,
+        })),
+      favorites: dashboardResources.slice(0, 3).map((resource) => ({
+        title: resource.title ?? 'Favorite Item',
+        category: resource.type === 'webapp' ? 'Web App' : resource.type === 'form' ? 'Report' : 'Report',
         accent: resource.accent ?? '#0284c7',
-        access: normalizeAccessList(resource.required_role),
-        url: resource.url,
       })),
-    departments: departments.map(buildDepartmentCard),
-    reports: dashboardResources
-      .filter((resource) => resource.type === 'report' || resource.type === 'form' || resource.type === 'sheet')
-      .map((resource) => ({
-        id: resource.id == null ? undefined : String(resource.id),
-        title: resource.title ?? 'Report',
-        subtitle: resource.subtitle ?? 'Portal report',
-        meta: resource.type === 'form' ? 'Form' as const : resource.type === 'sheet' ? 'Sheet' as const : normalizeMeta('report'),
-        accent: resource.accent ?? '#22c55e',
-        role: normalizePortalRole(resource.required_role ?? 'User'),
-        category: 'Report' as const,
-        url: resource.url,
-      })),
-    adminResources: dashboardResources
-      .filter((resource) => resource.type === 'admin' || normalizePortalRole(resource.required_role ?? 'User') === 'Admin')
-      .map((resource) => ({
-        title: resource.title ?? 'Admin Resource',
-        subtitle: resource.subtitle ?? 'Admin access',
-        meta: 'Admin' as const,
-        accent: resource.accent ?? '#0f172a',
-        role: normalizePortalRole(resource.required_role ?? 'Admin'),
-        category: 'Admin' as const,
-      })),
-    favorites: dashboardResources.slice(0, 3).map((resource) => ({
-      title: resource.title ?? 'Favorite Item',
-      category: resource.type === 'webapp' ? 'Web App' : resource.type === 'form' ? 'Report' : 'Report',
-      accent: resource.accent ?? '#0284c7',
-    })),
-  };
+    };
+  } catch (error) {
+    if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
+      throw new Error(`Dashboard request timed out. Connect your phone to the same Wi-Fi and confirm ${API_BASE_URL}/docs opens, then retry.`);
+    }
+
+    throw new Error(normalizeApiError(error, 'Unable to load dashboard data.'));
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 export async function fetchFavoritesData() {
@@ -254,7 +297,7 @@ async function requestBackend<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 
 
     return payload as T;
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unable to reach the Luna API. Please try again later.';
+    const message = normalizeApiError(error, 'Unable to reach the Luna API. Please try again later.');
 
     if (/invalid or expired token|unauthorized|401|403/i.test(message)) {
       await clearSession();
@@ -335,20 +378,53 @@ export async function deleteDepartmentRecord(departmentId: string) {
   return requestBackend<Record<string, unknown>>(`/api/admin/departments/${encodeURIComponent(departmentId)}`, 'DELETE');
 }
 
+export type ResourceCategory = 'webapp' | 'report' | 'form' | 'module' | 'department' | 'tiny' | 'sheet' | 'admin';
+
+const normalizeResourceType = (value?: string): ResourceCategory => {
+  const candidate = (value ?? 'webapp').toString().trim().toLowerCase();
+  const aliases: Record<string, ResourceCategory> = {
+    webapp: 'webapp',
+    web_app: 'webapp',
+    app: 'webapp',
+    report: 'report',
+    reports: 'report',
+    form: 'form',
+    forms: 'form',
+    module: 'module',
+    modules: 'module',
+    department: 'department',
+    departments: 'department',
+    tiny: 'tiny',
+    tiny_element: 'tiny',
+    tiny_element_1: 'tiny',
+    sheet: 'sheet',
+    sheets: 'sheet',
+    admin: 'admin',
+  };
+
+  return aliases[candidate] ?? (candidate as ResourceCategory);
+};
+
 export async function createModule(data: {
   title: string;
   description?: string;
-  type?: 'webapp' | 'report' | 'form';
+  type?: ResourceCategory;
+  category?: ResourceCategory;
   url?: string | null;
+  link?: string | null;
   icon?: string;
   department_id?: string | null;
   required_role?: string;
 }) {
-  return requestBackend<Record<string, unknown>>('/api/modules', 'POST', {
+  const resourceType = normalizeResourceType(data.category ?? data.type ?? 'webapp');
+
+  return requestBackend<Record<string, unknown>>('/api/admin/resources', 'POST', {
     title: data.title,
     description: data.description ?? '',
-    type: data.type ?? 'webapp',
-    url: data.url ?? null,
+    type: resourceType,
+    category: resourceType,
+    url: data.url ?? data.link ?? null,
+    link: data.link ?? data.url ?? null,
     icon: data.icon ?? 'star',
     department_id: data.department_id ?? null,
     required_role: data.required_role ?? 'User',
@@ -358,35 +434,51 @@ export async function createModule(data: {
 export async function updateModule(id: string, data: {
   title?: string;
   description?: string;
-  type?: 'webapp' | 'report' | 'form';
+  type?: ResourceCategory;
+  category?: ResourceCategory;
   url?: string | null;
+  link?: string | null;
   icon?: string;
   department_id?: string | null;
   required_role?: string;
 }) {
-  return requestBackend<Record<string, unknown>>(`/api/modules/${encodeURIComponent(id)}`, 'PUT', data);
+  const payload: Record<string, unknown> = { ...data };
+
+  if (typeof payload.type !== 'undefined' || typeof payload.category !== 'undefined') {
+    const nextType = normalizeResourceType((payload.category as string | undefined) ?? (payload.type as string | undefined) ?? 'webapp');
+    payload.type = nextType;
+    payload.category = nextType;
+  }
+
+  return requestBackend<Record<string, unknown>>(`/api/admin/resources/${encodeURIComponent(id)}`, 'PUT', payload);
 }
 
 export async function deleteModule(id: string) {
-  return requestBackend<Record<string, unknown>>(`/api/modules/${encodeURIComponent(id)}`, 'DELETE');
+  return requestBackend<Record<string, unknown>>(`/api/admin/resources/${encodeURIComponent(id)}`, 'DELETE');
 }
 
 export type ResourceMutation = {
   title: string;
   description?: string;
-  type: 'webapp' | 'report' | 'form' | 'sheet';
+  type: ResourceCategory;
+  category?: ResourceCategory;
   url?: string | null;
+  link?: string | null;
   icon?: string;
   department_id?: string | null;
   required_role?: string;
 };
 
 export async function createResourceRecord(resource: ResourceMutation) {
+  const resourceType = normalizeResourceType(resource.category ?? resource.type);
+
   return requestBackend<Record<string, unknown>>('/api/admin/resources', 'POST', {
     title: resource.title,
     description: resource.description ?? '',
-    type: resource.type,
-    url: resource.url ?? null,
+    type: resourceType,
+    category: resourceType,
+    url: resource.url ?? resource.link ?? null,
+    link: resource.link ?? resource.url ?? null,
     icon: resource.icon ?? 'star',
     department_id: resource.department_id ?? null,
     required_role: resource.required_role ?? 'User',
@@ -394,7 +486,15 @@ export async function createResourceRecord(resource: ResourceMutation) {
 }
 
 export async function updateResourceRecord(resourceId: string, updates: Partial<ResourceMutation>) {
-  return requestBackend<Record<string, unknown>>(`/api/admin/resources/${encodeURIComponent(resourceId)}`, 'PUT', updates);
+  const payload: Record<string, unknown> = { ...updates };
+
+  if (typeof payload.type !== 'undefined' || typeof payload.category !== 'undefined') {
+    const nextType = normalizeResourceType((payload.category as string | undefined) ?? (payload.type as string | undefined) ?? 'webapp');
+    payload.type = nextType;
+    payload.category = nextType;
+  }
+
+  return requestBackend<Record<string, unknown>>(`/api/admin/resources/${encodeURIComponent(resourceId)}`, 'PUT', payload);
 }
 
 export async function deleteResourceRecord(resourceId: string) {
@@ -403,7 +503,7 @@ export async function deleteResourceRecord(resourceId: string) {
 
 export async function createCustomModuleRecord(module: {
   id?: string;
-  type: 'webApp' | 'department' | 'report' | 'resource';
+  type: 'webApp' | 'department' | 'report' | 'resource' | 'webapp' | 'form' | 'module' | 'tiny';
   title: string;
   subtitle: string;
   accent: string;
@@ -411,26 +511,22 @@ export async function createCustomModuleRecord(module: {
   access: string[];
   department?: string;
 }) {
-  if (module.type === 'department') {
-    return createDepartmentRecord(module.title, Date.now());
-  }
-
-  const resourceType: 'webapp' | 'report' | 'form' =
-    module.type === 'webApp' ? 'webapp' : module.type === 'report' ? 'report' : 'form';
+  const resourceType = normalizeResourceType(module.type === 'webApp' ? 'webapp' : module.type === 'department' ? 'department' : module.type === 'report' ? 'report' : module.type === 'resource' ? 'module' : module.type === 'form' ? 'form' : module.type === 'module' ? 'module' : module.type === 'tiny' ? 'tiny' : 'webapp');
 
   return createResourceRecord({
     title: module.title,
     description: module.subtitle,
     type: resourceType,
+    category: resourceType,
     url: module.link,
-    icon: resourceType === 'webapp' ? 'web' : resourceType === 'report' ? 'file-text' : 'file',
+    icon: resourceType === 'webapp' ? 'web' : resourceType === 'report' ? 'file-text' : resourceType === 'form' ? 'file' : resourceType === 'module' ? 'grid' : resourceType === 'tiny' ? 'sparkles' : 'folder',
     required_role: module.access.includes('Admin') ? 'Admin' : module.access.includes('Manager') ? 'Manager' : module.access.includes('Supervisor') ? 'Supervisor' : 'User',
   });
 }
 
 export async function updateCustomModuleRecord(module: {
   id?: string;
-  type: 'webApp' | 'department' | 'report' | 'resource';
+  type: 'webApp' | 'department' | 'report' | 'resource' | 'webapp' | 'form' | 'module' | 'tiny';
   title: string;
   subtitle: string;
   accent: string;
@@ -442,34 +538,22 @@ export async function updateCustomModuleRecord(module: {
     throw new Error('Module id is required to update.');
   }
 
-  if (module.type === 'department') {
-    return updateDepartmentRecord(module.id, {
-      name: module.title,
-      icon: module.accent,
-      sort_order: Date.now(),
-    });
-  }
-
-  const resourceType: 'webapp' | 'report' | 'form' =
-    module.type === 'webApp' ? 'webapp' : module.type === 'report' ? 'report' : 'form';
+  const resourceType = normalizeResourceType(module.type === 'webApp' ? 'webapp' : module.type === 'department' ? 'department' : module.type === 'report' ? 'report' : module.type === 'resource' ? 'module' : module.type === 'form' ? 'form' : module.type === 'module' ? 'module' : module.type === 'tiny' ? 'tiny' : 'webapp');
 
   return updateResourceRecord(module.id, {
     title: module.title,
     description: module.subtitle,
     type: resourceType,
+    category: resourceType,
     url: module.link,
-    icon: resourceType === 'webapp' ? 'web' : resourceType === 'report' ? 'file-text' : 'file',
+    icon: resourceType === 'webapp' ? 'web' : resourceType === 'report' ? 'file-text' : resourceType === 'form' ? 'file' : resourceType === 'module' ? 'grid' : resourceType === 'tiny' ? 'sparkles' : 'folder',
     required_role: module.access.includes('Admin') ? 'Admin' : module.access.includes('Manager') ? 'Manager' : module.access.includes('Supervisor') ? 'Supervisor' : 'User',
   });
 }
 
-export async function deleteCustomModuleRecord(module: { id?: string; type: 'webApp' | 'department' | 'report' | 'resource' }) {
+export async function deleteCustomModuleRecord(module: { id?: string; type: 'webApp' | 'department' | 'report' | 'resource' | 'webapp' | 'form' | 'module' | 'tiny' }) {
   if (!module.id) {
     throw new Error('Module id is required to delete.');
-  }
-
-  if (module.type === 'department') {
-    return deleteDepartmentRecord(module.id);
   }
 
   return deleteResourceRecord(module.id);

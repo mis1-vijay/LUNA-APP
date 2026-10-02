@@ -1,4 +1,18 @@
-$ApiBaseUrl = 'http://10.194.239.184:8000'
+$defaultRoute = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+  Sort-Object RouteMetric, InterfaceMetric |
+  Select-Object -First 1
+
+$apiAddress = if ($defaultRoute) {
+  Get-NetIPAddress -InterfaceIndex $defaultRoute.InterfaceIndex -AddressFamily IPv4 -AddressState Preferred -ErrorAction SilentlyContinue |
+    Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
+    Select-Object -First 1 -ExpandProperty IPAddress
+}
+
+if (-not $apiAddress) {
+  throw 'Could not determine this computer''s active LAN IPv4 address.'
+}
+
+$ApiBaseUrl = "http://${apiAddress}:8000"
 $env:EXPO_PUBLIC_API_BASE_URL = $ApiBaseUrl
 
 $ports = @(8000, 19006)
