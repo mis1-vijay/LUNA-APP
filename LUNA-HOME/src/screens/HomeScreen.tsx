@@ -52,15 +52,19 @@ type ResourceFormState = {
   category: ResourceCategory;
 };
 
-const ROLE_RANK: Record<PortalRoleLevel, number> = { User: 1, Supervisor: 2, Manager: 3, Admin: 4 };
+const ROLE_RANK: Record<string, number> = { user: 1, employee: 1, supervisor: 2, manager: 3, admin: 4 };
 const ROLE_OPTIONS: PortalRoleLevel[] = ['User', 'Supervisor', 'Manager', 'Admin'];
 
 const canAccessRole = (currentRole: string | undefined, requiredRole?: string) => {
-  const target = requiredRole?.trim() || 'User';
-  const normalizedTarget = target === 'Employee' ? 'User' : target;
-  const current = ROLE_RANK[(currentRole as PortalRoleLevel) ?? 'User'] ?? 1;
-  const needed = ROLE_RANK[(normalizedTarget as PortalRoleLevel) ?? 'User'] ?? 1;
-  return current >= needed;
+  const currentRoleName = currentRole?.trim().toLowerCase() ?? 'user';
+  if (currentRoleName === 'admin' || currentRoleName === 'manager') {
+    return true;
+  }
+
+  const target = requiredRole?.trim().toLowerCase() || 'user';
+  const current = ROLE_RANK[currentRoleName] ?? 0;
+  const needed = ROLE_RANK[target] ?? 0;
+  return current > 0 && needed > 0 && current >= needed;
 };
 
 const normalizeLink = (value?: string) => {
@@ -88,7 +92,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
   });
   const [savingResource, setSavingResource] = useState(false);
 
-  const isAdmin = user?.role === 'Admin';
+  const isAdmin = role === 'Admin';
 
   const loadData = async () => {
     try {
@@ -161,8 +165,11 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
 
   const visibleAdminResources = useMemo(
     () =>
-      [...dynamicAdminResources, { title: 'Admin Console', subtitle: 'Manage users, departments and modules', meta: 'Admin', accent: '#5e1232', role: 'Admin', category: 'Admin' as const }].filter((item) => canAccessRole(role, item.role ?? 'Admin')),
-    [dynamicAdminResources, role],
+      [
+        ...dynamicAdminResources,
+        ...(isAdmin ? [{ title: 'Admin Console', subtitle: 'Manage users, departments and modules', meta: 'Admin' as const, accent: '#5e1232', role: 'Admin', category: 'Admin' as const }] : []),
+      ].filter((item) => canAccessRole(role, item.role ?? 'Admin')),
+    [dynamicAdminResources, isAdmin, role],
   );
 
   const currentHour = new Date().getHours();
@@ -171,7 +178,9 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
 
   const handleModulePress = async (label: string, link?: string) => {
     if (label === 'Admin Console') {
-      navigation.navigate('AdminConsole');
+      if (isAdmin) {
+        navigation.navigate('AdminConsole');
+      }
       return;
     }
 
@@ -305,7 +314,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
           <View style={styles.sectionHeaderTitleWrap}>
             <Text style={styles.sectionHeaderText}>WEB APPS</Text>
           </View>
-          {user?.role === 'Admin' && (
+          {isAdmin && (
             <TouchableOpacity style={styles.addButton} onPress={() => openCreateResource('webapp')} activeOpacity={0.8}>
               <Text style={styles.addButtonText}>+</Text>
             </TouchableOpacity>
@@ -380,7 +389,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
           <View style={styles.sectionHeaderTitleWrap}>
             <Text style={styles.sectionHeaderText}>REPORTS & FORMS</Text>
           </View>
-          {user?.role === 'Admin' && (
+          {isAdmin && (
             <TouchableOpacity style={styles.addButton} onPress={() => openCreateResource('report')} activeOpacity={0.8}>
               <Text style={styles.addButtonText}>+</Text>
             </TouchableOpacity>
@@ -420,7 +429,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
               <View style={styles.sectionHeaderTitleWrap}>
                 <Text style={styles.sectionHeaderText}>ADMINISTRATION</Text>
               </View>
-              {user?.role === 'Admin' && (
+              {isAdmin && (
                 <TouchableOpacity style={styles.addButton} onPress={() => openCreateResource('admin')} activeOpacity={0.8}>
                   <Text style={styles.addButtonText}>+</Text>
                 </TouchableOpacity>

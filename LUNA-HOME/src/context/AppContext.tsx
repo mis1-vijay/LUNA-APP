@@ -158,7 +158,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const addAdminUser = async (newUser: AdminManagedUser) => {
     const { password, ...safeUser } = newUser;
-    await createAdminUser({ ...safeUser, password, email: safeUser.email.trim().toLowerCase() });
+    if (!password || password.trim().length < 8) {
+      throw new Error('An initial password of at least 8 characters is required.');
+    }
+    await createAdminUser({ ...safeUser, password: password.trim(), email: safeUser.email.trim().toLowerCase() });
     await refreshAdminUsers();
   };
 

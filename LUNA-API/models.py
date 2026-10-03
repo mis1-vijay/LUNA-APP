@@ -12,6 +12,24 @@ class UserLogin(BaseModel):
     password: str = Field(..., min_length=6, max_length=128)
 
 
+class PasswordResetRequest(BaseModel):
+    employee_id: str = Field(..., min_length=3, max_length=50)
+
+
+class PasswordResetConfirm(BaseModel):
+    employee_id: str = Field(..., min_length=3, max_length=50)
+    code: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
+    password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("password")
+    @classmethod
+    def normalize_password(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) < 8:
+            raise ValueError("Password must contain at least 8 non-whitespace characters")
+        return normalized
+
+
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"

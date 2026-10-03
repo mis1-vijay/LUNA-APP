@@ -6,28 +6,106 @@ Build a reliable internal employee portal for LUNA TECH. Employees sign in with 
 
 This repository has working app and API flows, but it is not yet verified as production-ready. Treat the status below as a source-code assessment, not proof of a deployed or fully tested system.
 
-## Current implementation
+## Project status and production-readiness flow
+
+Status is based on the checked-in source and local workspace checks, not on a production deployment. Treat a stage as complete only when its exit criteria have been demonstrated in the target environment. Record decisions and evidence in the pull request or release record; do not infer production readiness from a successful local build.
+
+### Implemented in source
 
 - `LUNA-HOME` is an Expo SDK 57 / React Native / TypeScript app with login, home, search, favorites, profile, department workspace, embedded web-app detail, and admin console screens.
-- `LUNA-API` is a FastAPI service backed by Supabase. It implements login/JWT authentication, a role-filtered dashboard, and admin endpoints for users, departments, and resources.
-- User passwords are hashed by the API. The app stores the access token in SecureStore; favorites and custom-module state are stored in AsyncStorage.
-- The admin user flow calls the API. Admin resource mutations also call the API, but the UI mirrors those records into local custom-module state. Department workspace additions are currently local-only.
-- `start-luna.ps1` starts the API on port 8000 and Expo on port 19006, and detects the active default-route LAN IPv4 for the frontend API URL.
-- The backend contract test currently checks seed-data setup only. It calls the configured Supabase client, so inspect its target database before running it; do not point it at production for tests.
+- `LUNA-API` is a FastAPI service with password-hash login, JWT authentication, a role-filtered dashboard, and API routes for user, department, and resource administration.
+- Supabase is used for persistent backend records. Startup currently seeds default records and normalizes department ordering.
+- Admin user management calls the API. Admin resource management also calls the API, but resource state is mirrored locally; department workspace additions remain local-only.
+- Native token storage uses SecureStore. Web token storage uses AsyncStorage because SecureStore's native methods are unavailable on web; this is a production security decision that must be resolved before enabling web sign-in for real users.
+- Local development uses Expo and Uvicorn. `start-luna.ps1` detects a LAN IP, but includes a machine-specific path and force-stops processes on the app ports; it is a local helper, not a production deployment mechanism.
 
-## Open work and known gaps
+### Verified locally in this workspace
 
-Use these as verified follow-up areas, not permission for unrelated rewrites. Confirm product requirements and deployment configuration before changing behavior.
+- Expo SDK dependency compatibility check and TypeScript no-emit check pass.
+- Backend Python source compiles.
+- The local API docs and Expo web page returned HTTP 200, and the login page rendered. A prior local session also recorded successful login/dashboard requests.
+- The only checked-in backend test is a seed-data contract test that calls the configured Supabase database. No frontend test suite, CI workflow, production deployment manifest, or repeatable migration framework was found in the tracked project tree.
+- The last `npm audit --omit=dev` reported 23 advisories (16 high, 7 moderate). Its forced fix proposed downgrading Expo to SDK 44, so that breaking change was not applied. Re-run the audit against the current lockfile before release.
+- These checks do not establish security, full feature correctness, mobile-device compatibility, release-build correctness, availability, or production readiness.
 
-- Replace or explicitly gate the API's `example.com` seed resource URLs before using seeded data as live company content.
-- Make backend resources the single source of truth in the admin and department flows. Remove duplicate local mirrors, persist department additions through the API, and refresh views after mutations.
-- Keep internal links in-app where supported. The web-app detail screen uses WebView, while department workspace links currently open with the system browser.
-- Complete or remove placeholder account actions: forgot-password and profile update currently show informational alerts rather than performing those workflows.
-- Correct and test favorites/search behavior against the full accessible resource set; favorites currently derive from only a small dashboard subset, and search matching is title-only.
-- Harden deployment configuration before release: `main.py` has a fallback JWT secret and permissive wildcard CORS. Require a strong environment-provided secret, configure allowed origins, and never commit or expose credentials from `.env`.
-- Replace the machine-specific startup address with configurable setup, and document the required Supabase and API environment variables without publishing their values.
-- Expand automated coverage for authentication, role checks, admin CRUD, data-contract mapping, and frontend flows. Keep tests isolated from live Supabase data.
-- Verify database schema/migrations and deployment behavior against a non-production Supabase project; the checked-in schema-fix SQL is a manual alignment script, not a migration workflow.
+### Stage 0 — Contain credentials and remove unsafe defaults
+
+Do this before connecting a release build to any real user data.
+
+- Rotate Supabase credentials and bootstrap/admin passwords that were placed in source, shared outside approved secret storage, or used for local experimentation. Assume exposed credentials are compromised; never copy their values into tickets, logs, docs, or Expo public variables.
+- Remove hard-coded Supabase connection details and fixed bootstrap identity/password from `LUNA-API/create_admin.py`. Make bootstrap an explicit, one-time operator action that reads secrets securely, is safe to rerun or clearly rejects duplicates, and does not print secrets.
+- Remove default user passwords from frontend request construction. Require an administrator to set a compliant initial credential or implement a verified invitation/reset flow.
+- Make `JWT_SECRET_KEY` mandatory, sufficiently random, and loaded from deployment secrets; remove the development fallback. Define token expiry and the response to expiry/revocation.
+- Replace wildcard CORS with an explicit allowlist for the intended web origins. Keep native-app/API access working without treating CORS as authorization.
+- Keep `.env` files local and ignored. Add only a placeholder `.env.example` with variable names and safe descriptions, never real values. Verify no secrets are tracked or logged.
+- Confirm the backend uses the intended least-privilege Supabase key and that database RLS/service-role behavior matches the chosen authorization design.
+
+**Exit gate:** rotated credentials are active; no source-controlled secrets/default credentials remain; authentication, CORS, and database privilege decisions are reviewed; negative auth tests pass.
+
+### Stage 1 — Lock product and data decisions
+
+- Approve the exact internal resources, URLs, departments, role visibility, and owner for each resource. Replace or explicitly disable all `example.com` seed URLs; do not seed placeholders into a live company database.
+- Decide whether favorites are per-user and cross-device or intentionally device-local. The current favorites response uses only a small dashboard subset.
+- Decide whether department workspace additions are supported production data. If so, persist them via authorized API routes rather than local-only state.
+- Decide whether Forgot Password and profile update are supported release features. Implement the approved flows securely or remove/disable the controls; they currently show informational alerts.
+- Approve link-opening behavior for internal resources, especially external browser versus in-app WebView, and define an allowlist/policy for destinations.
+- Confirm the launch platforms (web, Android, iOS), supported devices, branding/app identifiers, employee onboarding process, and operational owner.
+
+**Exit gate:** product owner signs off on scope, seeded content, role/access matrix, account lifecycle, and target platforms.
+
+### Stage 2 — Establish safe database lifecycle and source of truth
+
+- Create separate non-production and production Supabase projects. Never run contract tests or seed scripts against production.
+- Replace the manual `supabase_schema_fix.sql` alignment script with reviewed, ordered, repeatable migrations and a documented production migration procedure. Back up production before schema changes.
+- Move seed/normalization work out of unconditional API startup. Make production migrations and approved seed data explicit, repeatable deployment steps with a dry-run/review path; normal API restarts must not unexpectedly alter business data.
+- Review schema constraints, unique keys, foreign keys, indexes, password-hash storage, RLS, backup/restore, and least-privilege access.
+- Make backend records the source of truth for admin resources and departments. Remove duplicate local mirrors or clearly separate draft-only UI state; refresh screens from API responses after mutations.
+- Define and test data mapping for every API resource type and department. Ensure search and favorites operate over the full set the signed-in user is authorized to see, without silent truncation.
+
+**Exit gate:** migrations apply cleanly to a fresh staging database and an upgrade copy; seed data contains approved values only; CRUD and visibility checks pass against staging.
+
+### Stage 3 — Close application and API behavior gaps
+
+- Enforce authorization in every protected API route; frontend role filtering is presentation only. Verify role hierarchy, inactive users, self-escalation, cross-department access, and object-level access.
+- Add the approved profile/password lifecycle or remove placeholder actions. Handle logout, token expiry, invalidation, and account deactivation consistently.
+- Decide on a secure web token mechanism before production web login. Do not treat localStorage/AsyncStorage as equivalent to native secure storage; prefer a reviewed secure-cookie/BFF design if web is in scope.
+- Complete persistence for approved department/resource flows and favorites; remove defaults such as the client-side fallback user password.
+- Validate and normalize input at the API boundary, including URLs, roles, department IDs, resource types, pagination/limits, and user fields. Return stable, documented error shapes and avoid leaking internals.
+- Replace the development launcher assumptions for deployed environments. Keep the LAN launcher clearly local-only; do not use its process-killing behavior in shared or production environments.
+
+**Exit gate:** agreed user journeys work end-to-end on every launch platform; API contracts and access rules are documented; no production feature depends on placeholder content or local-only state unless explicitly approved.
+
+### Stage 4 — Tests, quality gates, and dependency health
+
+- Replace `LUNA-API/test_backend_contract.py`'s live `ensure_seed_data()` dependency with isolated unit/integration tests using mocks or a dedicated disposable staging database.
+- Add API tests for login, hashing, token expiry, role/access boundaries, user CRUD, department/resource CRUD, validation, and schema/data mapping.
+- Add frontend tests for login/logout/storage, loading/error/empty states, search, favorites, role presentation, and admin/department mutations. Include web and native-specific storage behavior.
+- Add repeatable CI for Python lint/type/syntax/tests, TypeScript, frontend tests, Expo SDK compatibility, dependency auditing, and build validation. CI must not receive production secrets.
+- Pin or constrain backend dependencies and use a reproducible lock/constraints strategy. Review `npm audit` and Python advisories; update through compatible releases and test the lockfile. Do not use forced major downgrades as an audit fix.
+- Run Expo web and intended Android/iOS release builds, not only Metro development mode. Test supported physical devices and network conditions.
+
+**Exit gate:** CI is green from a clean checkout; tests use no production data; vulnerabilities are remediated or have a documented, time-bound risk acceptance; all target-platform release builds succeed.
+
+### Stage 5 — Staging deployment and operational readiness
+
+- Choose and document the production API host, DNS, HTTPS/TLS, secrets manager, runtime/start command, scaling/health checks, logs, alerting, and deployment owner. Run Uvicorn without `--reload` in production.
+- Configure staging-only Supabase credentials and `EXPO_PUBLIC_API_BASE_URL` at build/deploy time. The public Expo variable may contain only the API URL, never a credential.
+- Add liveness/readiness checks that distinguish process health from database dependency health. Define timeouts, request limits, rate limits, and safe error logging.
+- Configure production CORS, trusted proxy behavior, TLS, backups/restore tests, migration ordering, and rollback/forward-fix procedures.
+- For mobile releases, configure EAS/build signing, bundle/package identifiers, update channel/runtime policy, privacy disclosures, and store credentials. For web, configure static hosting, cache policy, security headers, and permitted origins.
+- Verify startup, login, role visibility, CRUD, logout/expiry, links, and failure recovery in staging using test accounts and non-production data. Confirm no secrets appear in built JS, source maps, logs, or client requests.
+
+**Exit gate:** staging deployment and recovery runbook are exercised by someone other than the implementer; staging smoke tests pass on all launch platforms.
+
+### Stage 6 — Controlled production release and operations
+
+- Obtain product, security, database, and operations sign-off. Confirm backups and rollback/forward-fix plan immediately before release.
+- Apply reviewed migrations once, deploy the API, verify health, then publish the frontend/mobile release configured for the production API.
+- Use a limited pilot/cohort first. Monitor authentication failures, API errors/latency, database health, and user-reported issues; have a named owner and escalation route.
+- Expand rollout only after the agreed observation window and success thresholds are met. Record deployed versions, migration IDs, approvals, and rollback decisions.
+- Maintain incident response, credential rotation, dependency patching, backup restore drills, and a regular review of access/employee offboarding.
+
+**Production go/no-go:** all prior exit gates are met; no known default credentials or placeholder URLs remain; security and product approvals are recorded; tested rollback/restore exists; monitoring and ownership are active.
 
 ## Required source of truth
 
@@ -68,13 +146,14 @@ Run the smallest relevant checks and report what was and was not verified.
 Frontend, from `LUNA-HOME`:
 
 ```powershell
-npx --yes tsc --noEmit
+npx tsc --noEmit
+npx expo install --check
 ```
 
-Backend syntax, from `LUNA-API`:
+Backend syntax, from `LUNA-API` using the configured project Python environment:
 
 ```powershell
 python -m py_compile main.py
 ```
 
-Before running backend tests, inspect their database dependencies and configure an isolated test database. Do not run tests that call `ensure_seed_data()` against a production Supabase project.
+Before running backend tests, inspect their database dependencies and configure an isolated test database. Do not run tests that call `ensure_seed_data()` against production Supabase. Local checks are not release checks: run the test/build suite and smoke tests against staging before requesting production approval.

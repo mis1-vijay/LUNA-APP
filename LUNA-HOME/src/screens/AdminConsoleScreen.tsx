@@ -40,7 +40,7 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
   const [employeeId, setEmployeeId] = useState('');
   const [userDepartment, setUserDepartment] = useState('Packing');
   const [userRole, setUserRole] = useState<'Admin' | 'Manager' | 'Supervisor' | 'User'>('User');
-  const [userPassword, setUserPassword] = useState('luna123');
+  const [userPassword, setUserPassword] = useState('');
   const [userEmail, setUserEmail] = useState('');
   const [userPhone, setUserPhone] = useState('');
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
@@ -206,7 +206,7 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
     setEmployeeId(person.employeeId);
     setUserDepartment(person.department);
     setUserRole(person.role);
-    setUserPassword(person.password ?? 'luna123');
+    setUserPassword('');
     setUserEmail(person.email);
     setUserPhone(person.phone);
     setActiveTab('users');
@@ -230,6 +230,11 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
       Alert.alert('User details required', 'Enter the user name and employee ID before saving.');
       return;
     }
+    const initialPassword = userPassword.trim();
+    if (!editingUserId && initialPassword.length < 8) {
+      Alert.alert('Password required', 'Enter an initial password with at least 8 characters.');
+      return;
+    }
 
     const generatedEmail = userEmail.trim() || `${employeeId.trim().toUpperCase()}@LUNA.CO.IN`;
     const payload: Partial<AdminManagedUser> = {
@@ -239,8 +244,10 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
       role: userRole,
       email: generatedEmail,
       phone: userPhone.trim() || 'Not set',
-      password: userPassword.trim() || 'luna123',
     };
+    if (initialPassword) {
+      payload.password = initialPassword;
+    }
 
     if (editingUserId) {
       const person = adminUsers.find((item) => item.id === editingUserId);
@@ -258,7 +265,7 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
         active: true,
         email: payload.email ?? `${employeeId.trim().toUpperCase()}@LUNA.CO.IN`,
         phone: payload.phone ?? (userPhone.trim() || 'Not set'),
-        password: payload.password ?? (userPassword.trim() || 'luna123'),
+        password: initialPassword,
       };
 
       addAdminUser(record);
@@ -270,7 +277,7 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
     setEmployeeId('');
     setUserDepartment('Packing');
     setUserRole('User');
-    setUserPassword('luna123');
+    setUserPassword('');
     setUserEmail('');
     setUserPhone('');
   };
@@ -281,7 +288,7 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
     setEmployeeId('');
     setUserDepartment('Packing');
     setUserRole('User');
-    setUserPassword('luna123');
+    setUserPassword('');
     setUserEmail('');
     setUserPhone('');
     setActiveTab('users');

@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   ScrollView,
 } from 'react-native';
@@ -17,7 +18,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { type NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import { useAppContext } from '../context/AppContext';
-import type { UserRole } from '../services/authService';
+import { requestPasswordReset, resetPassword, type UserRole } from '../services/authService';
 
 const lunaLogo = require('../../luna logo.png');
 
@@ -35,6 +36,12 @@ export default function LoginScreen({ navigation }: LoginScreenProps) {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [resetVisible, setResetVisible] = useState(false);
+  const [resetEmployeeId, setResetEmployeeId] = useState('');
+  const [resetCode, setResetCode] = useState('');
+  const [resetPasswordValue, setResetPasswordValue] = useState('');
+  const [resetRequestSent, setResetRequestSent] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
   const { login, isAuthenticated, role } = useAppContext();
 
   useEffect(() => {
@@ -72,6 +79,49 @@ export default function LoginScreen({ navigation }: LoginScreenProps) {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleRequestResetCode = async () => {
+    if (resetEmployeeId.trim().length < 3) {
+      Alert.alert('Employee ID required', 'Enter your employee ID to request a reset code.');
+      return;
+    }
+
+    setResetLoading(true);
+    try {
+      await requestPasswordReset(resetEmployeeId);
+      setResetRequestSent(true);
+      Alert.alert('Check your email', 'If the account exists and has an email on file, a reset code has been sent.');
+    } catch (error) {
+      Alert.alert('Reset request failed', error instanceof Error ? error.message : 'Unable to request a password reset.');
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
+  const handleResetPassword = async () => {
+    if (resetCode.trim().length !== 6 || resetPasswordValue.trim().length < 8) {
+      Alert.alert('Invalid details', 'Enter the six-digit email code and a password with at least 8 characters.');
+      return;
+    }
+
+    setResetLoading(true);
+    try {
+      await resetPassword(resetEmployeeId, resetCode, resetPasswordValue.trim());
+      Alert.alert('Password updated', 'You can now sign in with your new password.');
+      closeResetModal();
+    } catch (error) {
+      Alert.alert('Password reset failed', error instanceof Error ? error.message : 'Unable to reset your password.');
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
+  const closeResetModal = () => {
+    setResetVisible(false);
+    setResetCode('');
+    setResetPasswordValue('');
+    setResetRequestSent(false);
   };
 
   return (
@@ -142,12 +192,88 @@ export default function LoginScreen({ navigation }: LoginScreenProps) {
               {loading ? <ActivityIndicator color="#ffffff" size="small" /> : <Text style={styles.buttonText}>LOGIN</Text>}
             </TouchableOpacity>
 
-            <TouchableOpacity activeOpacity={0.8} onPress={() => Alert.alert('Reset Password', 'Password reset flow is coming soon.')}>
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => {
+                setResetEmployeeId(employeeId);
+                setResetCode('');
+                setResetPasswordValue('');
+                setResetRequestSent(false);
+                setResetVisible(true);
+              }}
+            >
               <Text style={styles.forgotText}>Forgot Password?</Text>
             </TouchableOpacity>
           </View>
         </ScrollView>
       </SafeAreaView>
+      <Modal transparent visible={resetVisible} animationType="fade" onRequestClose={closeResetModal}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.resetModal}>
+            <Text style={styles.resetTitle}>Reset password</Text>
+            <Text style={styles.resetDescription}>Verify your email address to securely update your password.</Text>
+            <TextInput
+              value={resetEmployeeId}
+              onChangeText={setResetEmployeeId}
+              style={styles.input}
+              placeholder="Employee ID"
+              placeholderTextColor="#64748b"
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            {resetRequestSent ? (
+              <>
+                <TextInput
+                  value={resetCode}
+                  onChangeText={setResetCode}
+                  style={styles.input}
+                  placeholder="Six-digit email code"
+                  placeholderTextColor="#64748b"
+                  keyboardType="number-pad"
+                  maxLength={6}
+                />
+                <TextInput
+                  value={resetPasswordValue}
+                  onChangeText={setResetPasswordValue}
+                  style={styles.input}
+                  placeholder="New password (8+ characters)"
+                  placeholderTextColor="#64748b"
+                  secureTextEntry
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </>
+            ) : null}
+            {resetRequestSent ? (
+              <TouchableOpacity
+                style={styles.button}
+                onPress={() => void handleResetPassword()}
+                activeOpacity={0.9}
+                disabled={resetLoading}
+              >
+                {resetLoading ? <ActivityIndicator color="#ffffff" size="small" /> : <Text style={styles.buttonText}>UPDATE PASSWORD</Text>}
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={styles.button}
+                onPress={() => void handleRequestResetCode()}
+                activeOpacity={0.9}
+                disabled={resetLoading}
+              >
+                {resetLoading ? <ActivityIndicator color="#ffffff" size="small" /> : <Text style={styles.buttonText}>SEND RESET CODE</Text>}
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              style={styles.cancelResetButton}
+              onPress={closeResetModal}
+              activeOpacity={0.8}
+              disabled={resetLoading}
+            >
+              <Text style={styles.cancelResetText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -264,5 +390,37 @@ const styles = StyleSheet.create({
     fontSize: 12,
     textAlign: 'center',
     marginTop: 12,
+  },
+  modalBackdrop: {
+    flex: 1,
+    justifyContent: 'center',
+    padding: 24,
+    backgroundColor: 'rgba(15, 23, 42, 0.55)',
+  },
+  resetModal: {
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    padding: 22,
+  },
+  resetTitle: {
+    color: '#0f172a',
+    fontSize: 21,
+    fontWeight: '800',
+    marginBottom: 8,
+  },
+  resetDescription: {
+    color: '#475569',
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: 16,
+  },
+  cancelResetButton: {
+    alignItems: 'center',
+    paddingVertical: 14,
+  },
+  cancelResetText: {
+    color: '#475569',
+    fontSize: 15,
+    fontWeight: '700',
   },
 });

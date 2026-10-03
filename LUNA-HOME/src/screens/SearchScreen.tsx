@@ -1,20 +1,28 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Linking, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import Header from '../components/Header';
 import SearchBar from '../components/SearchBar';
 import { useAppContext } from '../context/AppContext';
 import { fetchSearchData } from '../services/portalApi';
+import type { RootStackParamList } from '../types';
 
 type SearchItem = {
   title: string;
   category: 'Web App' | 'Department' | 'Report' | 'Admin';
   accent: string;
   role: string[];
+  url?: string;
+  subtitle?: string;
 };
 
+const ROLE_RANK: Record<string, number> = { user: 1, employee: 1, supervisor: 2, manager: 3, admin: 4 };
+
 export default function SearchScreen() {
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [query, setQuery] = useState('');
   const [searchItems, setSearchItems] = useState<SearchItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -31,6 +39,8 @@ export default function SearchScreen() {
             category: item.type === 'webApp' ? 'Web App' : item.type === 'department' ? 'Department' : 'Report',
             accent: item.accent,
             role: item.access.map((access) => access.toLowerCase()),
+            url: item.link,
+            subtitle: item.subtitle,
           })),
         ];
         setSearchItems(merged);
@@ -47,12 +57,57 @@ export default function SearchScreen() {
 
   const filteredResources = useMemo(() => {
     return searchItems.filter((item) => {
-      const itemRoles = Array.isArray(item.role) ? item.role : [String(item.role ?? 'user')];
-      const matchesRole = itemRoles.includes(role.toLowerCase()) || role === 'Admin' || role === 'Manager';
+      const itemRoles = Array.isArray(item.role) && item.role.length > 0 ? item.role : ['user'];
+      const matchesRole = role === 'Admin' || role === 'Manager' || itemRoles.some(
+        (requiredRole) => (ROLE_RANK[role.toLowerCase()] ?? 0) >= (ROLE_RANK[requiredRole.toLowerCase()] ?? Infinity),
+      );
       const matchesQuery = item.title.toLowerCase().includes(query.toLowerCase());
       return matchesRole && matchesQuery;
     });
   }, [query, role, searchItems]);
+
+  const openSearchItem = async (item: SearchItem) => {
+    if (item.category === 'Department') {
+      navigation.navigate('DepartmentWorkspace', { department: item.title });
+      return;
+    }
+
+    if (item.category === 'Web App' && !item.url) {
+      Alert.alert('Unable to open app', 'This app does not have a destination URL yet.');
+      return;
+    }
+
+    if (item.url && item.category === 'Web App') {
+      const customWebApp = customModules.some((module) => module.title === item.title && module.type === 'webApp');
+      if (customWebApp) {
+        try {
+          await Linking.openURL(item.url);
+        } catch (error) {
+          Alert.alert('Unable to open link', error instanceof Error ? error.message : 'The selected resource could not be opened.');
+        }
+        return;
+      }
+
+      navigation.navigate('WebAppDetail', {
+        appName: item.title,
+        appSubtitle: item.subtitle ?? 'Portal access',
+        accent: item.accent,
+        url: item.url,
+      });
+      return;
+    }
+
+    if (item.url) {
+      try {
+        await Linking.openURL(item.url);
+      } catch (error) {
+        Alert.alert('Unable to open link', error instanceof Error ? error.message : 'The selected resource could not be opened.');
+      }
+      return;
+    }
+
+    Alert.alert('Unable to open resource', 'This resource does not have a destination URL yet.');
+  };
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -68,7 +123,12 @@ export default function SearchScreen() {
             </View>
           ) : filteredResources.length > 0 ? (
             filteredResources.map((item, index) => (
-              <View key={`${item.title}-${item.category}-${index}`} style={styles.resultItem}>
+              <TouchableOpacity
+                key={`${item.title}-${item.category}-${index}`}
+                style={styles.resultItem}
+                activeOpacity={0.8}
+                onPress={() => void openSearchItem(item)}
+              >
                 <View style={styles.resultBody}>
                   <Text style={styles.resultTitle}>{item.title}</Text>
                   <Text style={styles.resultMeta}>{item.category}</Text>
@@ -84,7 +144,7 @@ export default function SearchScreen() {
                     color={isFavorite(`${item.category}:${item.title}`) ? '#fbbf24' : '#64748b'}
                   />
                 </TouchableOpacity>
-              </View>
+              </TouchableOpacity>
             ))
           ) : (
             <View style={styles.placeholder}>

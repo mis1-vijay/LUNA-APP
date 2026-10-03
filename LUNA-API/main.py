@@ -1,8 +1,13 @@
 # main.py
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
+import secrets
+import smtplib
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -15,6 +20,8 @@ from database import get_supabase
 from models import (
     DepartmentCreate,
     DepartmentResponse,
+    PasswordResetConfirm,
+    PasswordResetRequest,
     ResourceCreate,
     ResourceResponse,
     ResourceUpdate,
@@ -36,9 +43,11 @@ app.add_middleware(
 
 security = HTTPBearer()
 
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-me-in-production")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_MINUTES = 60 * 8
+PASSWORD_RESET_EXPIRATION_MINUTES = 10
+PASSWORD_RESET_RESEND_SECONDS = 60
+PASSWORD_RESET_MAX_ATTEMPTS = 5
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -92,13 +101,25 @@ def create_access_token(employee_id: str, role: str) -> str:
         "role": role,
         "exp": expires_at,
     }
-    return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    return jwt.encode(payload, get_jwt_secret_key(), algorithm=JWT_ALGORITHM)
+
+
+def get_jwt_secret_key() -> str:
+    secret_key = os.getenv("JWT_SECRET_KEY")
+    if not secret_key:
+        raise RuntimeError("Missing required environment variable: JWT_SECRET_KEY")
+    return secret_key
 
 
 def has_access(user_role: str, required_role: Optional[str]) -> bool:
-    if not required_role:
+    normalized_user_role = normalize_required_role(user_role)
+    if normalized_user_role in {"Admin", "Manager"}:
         return True
-    return ROLE_PRIORITY.get(user_role, 0) >= ROLE_PRIORITY.get(required_role, 0)
+
+    normalized_required_role = normalize_required_role(required_role)
+    user_priority = ROLE_PRIORITY.get(normalized_user_role, 0)
+    required_priority = ROLE_PRIORITY.get(normalized_required_role, 0)
+    return user_priority > 0 and required_priority > 0 and user_priority >= required_priority
 
 
 def get_user_by_employee_id(employee_id: str) -> Optional[Dict[str, Any]]:
@@ -148,7 +169,7 @@ def get_current_user(
 ) -> Dict[str, Any]:
     token = credentials.credentials
     try:
-        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(token, get_jwt_secret_key(), algorithms=[JWT_ALGORITHM])
     except JWTError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -182,40 +203,7 @@ def get_current_user(
     return user
 
 
-def require_admin(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
-    token = credentials.credentials
-    try:
-        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-    except JWTError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from exc
-
-    employee_id = payload.get("sub")
-    if not employee_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token payload",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    current_user = get_user_by_employee_id(str(employee_id))
-    if not current_user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    if not current_user.get("active", False):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Inactive user account",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
+def require_admin(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
     if str(current_user.get("role") or "User") != "Admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -223,6 +211,63 @@ def require_admin(credentials: HTTPAuthorizationCredentials = Depends(security))
         )
 
     return current_user
+
+
+def get_smtp_settings() -> tuple[str, int, str, str, str]:
+    host = os.getenv("SMTP_HOST")
+    username = os.getenv("SMTP_USERNAME")
+    password = os.getenv("SMTP_PASSWORD")
+    sender = os.getenv("SMTP_FROM_EMAIL")
+
+    if not host or not username or not password or not sender:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Password reset email is not configured.",
+        )
+
+    try:
+        port = int(os.getenv("SMTP_PORT", "587"))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Password reset email is not configured.",
+        ) from exc
+
+    if port < 1 or port > 65535:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Password reset email is not configured.",
+        )
+    return host, port, username, password, sender
+
+
+def hash_reset_code(employee_id: str, code: str) -> str:
+    message = f"{employee_id}:{code}".encode("utf-8")
+    return hmac.new(get_jwt_secret_key().encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def send_password_reset_email(email: str, code: str) -> None:
+    host, port, username, password, sender = get_smtp_settings()
+    message = EmailMessage()
+    message["Subject"] = "Luna portal password reset"
+    message["From"] = sender
+    message["To"] = email
+    message.set_content(
+        f"Your Luna portal password reset code is {code}. "
+        f"It expires in {PASSWORD_RESET_EXPIRATION_MINUTES} minutes. "
+        "If you did not request this reset, you can ignore this email."
+    )
+
+    try:
+        with smtplib.SMTP(host, port, timeout=10) as smtp:
+            smtp.starttls()
+            smtp.login(username, password)
+            smtp.send_message(message)
+    except (OSError, smtplib.SMTPException) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to send password reset email. Please try again later.",
+        ) from exc
 
 
 def normalize_resource_kind(value: Optional[str]) -> str:
@@ -397,6 +442,7 @@ def ensure_seed_data() -> Dict[str, int]:
 
 @app.on_event("startup")
 def startup() -> None:
+    get_jwt_secret_key()
     ensure_seed_data()
 
 
@@ -423,6 +469,106 @@ def login(payload: UserLogin) -> Token:
     )
 
 
+@app.post("/api/auth/request-password-reset")
+def request_password_reset(payload: PasswordResetRequest) -> Dict[str, str]:
+    get_smtp_settings()
+    response_message = "If the account exists and has an email address on file, reset instructions have been sent."
+    supabase = get_supabase()
+    user = get_user_by_employee_id(payload.employee_id)
+    email = user.get("email") if user else None
+    if not user or not user.get("active", False) or not isinstance(email, str) or not email.strip():
+        return {"message": response_message}
+
+    now = datetime.now(timezone.utc)
+    existing = (
+        supabase.table("password_reset_tokens")
+        .select("requested_at")
+        .eq("employee_id", payload.employee_id)
+        .limit(1)
+        .execute()
+    )
+    if existing.data:
+        requested_at = datetime.fromisoformat(str(existing.data[0]["requested_at"]).replace("Z", "+00:00"))
+        if requested_at.tzinfo is None:
+            requested_at = requested_at.replace(tzinfo=timezone.utc)
+        if (now - requested_at).total_seconds() < PASSWORD_RESET_RESEND_SECONDS:
+            return {"message": response_message}
+
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    supabase.table("password_reset_tokens").upsert(
+        {
+            "employee_id": payload.employee_id,
+            "token_hash": hash_reset_code(payload.employee_id, code),
+            "expires_at": (now + timedelta(minutes=PASSWORD_RESET_EXPIRATION_MINUTES)).isoformat(),
+            "requested_at": now.isoformat(),
+            "attempts": 0,
+        },
+        on_conflict="employee_id",
+    ).execute()
+
+    try:
+        send_password_reset_email(email.strip(), code)
+    except HTTPException:
+        supabase.table("password_reset_tokens").delete().eq("employee_id", payload.employee_id).execute()
+        raise
+    return {"message": response_message}
+
+
+@app.post("/api/auth/reset-password")
+def reset_password(payload: PasswordResetConfirm) -> Dict[str, str]:
+    supabase = get_supabase()
+    response = (
+        supabase.table("password_reset_tokens")
+        .select("*")
+        .eq("employee_id", payload.employee_id)
+        .limit(1)
+        .execute()
+    )
+    if not response.data:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset code.")
+
+    challenge = response.data[0]
+    now = datetime.now(timezone.utc)
+    expires_at = datetime.fromisoformat(str(challenge["expires_at"]).replace("Z", "+00:00"))
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    attempts = int(challenge.get("attempts") or 0)
+    if now >= expires_at or attempts >= PASSWORD_RESET_MAX_ATTEMPTS:
+        supabase.table("password_reset_tokens").delete().eq("employee_id", payload.employee_id).execute()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset code.")
+
+    expected_hash = str(challenge["token_hash"])
+    supplied_hash = hash_reset_code(payload.employee_id, payload.code)
+    if not hmac.compare_digest(expected_hash, supplied_hash):
+        attempts += 1
+        if attempts >= PASSWORD_RESET_MAX_ATTEMPTS:
+            supabase.table("password_reset_tokens").delete().eq("employee_id", payload.employee_id).execute()
+        else:
+            supabase.table("password_reset_tokens").update({"attempts": attempts}).eq(
+                "employee_id", payload.employee_id
+            ).eq("token_hash", expected_hash).execute()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset code.")
+
+    consumed = (
+        supabase.table("password_reset_tokens")
+        .delete()
+        .eq("employee_id", payload.employee_id)
+        .eq("token_hash", expected_hash)
+        .execute()
+    )
+    if not consumed.data:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset code.")
+
+    updated = update_user_record(
+        supabase,
+        payload.employee_id,
+        {"password_hash": pwd_context.hash(payload.password)},
+    )
+    if not updated.data:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset code.")
+    return {"message": "Password reset successfully."}
+
+
 @app.get("/api/portal/dashboard")
 def get_dashboard(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
     ensure_seed_data()
@@ -440,19 +586,6 @@ def get_dashboard(current_user: Dict[str, Any] = Depends(get_current_user)) -> D
         if has_access(user_role, resource.get("required_role")):
             accessible_resources.append(ResourceResponse(**resource))
 
-    if user_role != "Admin":
-        visible_department_ids = {
-            resource.department_id
-            for resource in accessible_resources
-            if resource.department_id is not None
-        }
-
-        departments = [
-            department
-            for department in departments
-            if department.id in visible_department_ids
-        ]
-
     return {
         "role": user_role,
         "departments": departments,
@@ -461,7 +594,7 @@ def get_dashboard(current_user: Dict[str, Any] = Depends(get_current_user)) -> D
 
 
 @app.get("/api/admin/departments")
-def list_departments(current_user: Dict[str, Any] = Depends(require_admin)) -> List[Dict[str, Any]]:
+def list_departments(current_user: Dict[str, Any] = Depends(get_current_user)) -> List[Dict[str, Any]]:
     supabase = get_supabase()
     response = supabase.table("departments").select("*").order("sort_order").execute()
     return response.data
@@ -514,10 +647,15 @@ def delete_module(module_id: str, current_user: Dict[str, Any] = Depends(require
 
 
 @app.get("/api/admin/resources")
-def list_resources(current_user: Dict[str, Any] = Depends(require_admin)) -> List[Dict[str, Any]]:
+def list_resources(current_user: Dict[str, Any] = Depends(get_current_user)) -> List[Dict[str, Any]]:
     supabase = get_supabase()
     response = supabase.table("resources").select("*").execute()
-    return response.data
+    user_role = str(current_user.get("role") or "User")
+    return [
+        resource
+        for resource in response.data or []
+        if has_access(user_role, resource.get("required_role"))
+    ]
 
 
 @app.post("/api/admin/resources", status_code=status.HTTP_201_CREATED)
@@ -558,7 +696,7 @@ def delete_resource(resource_id: str, current_user: Dict[str, Any] = Depends(req
 
 
 @app.get("/api/admin/items")
-def list_items(current_user: Dict[str, Any] = Depends(require_admin)) -> List[Dict[str, Any]]:
+def list_items(current_user: Dict[str, Any] = Depends(get_current_user)) -> List[Dict[str, Any]]:
     return list_resources(current_user)
 
 

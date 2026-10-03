@@ -21,9 +21,12 @@ import { RootStackParamList } from '../types';
 
 type DepartmentWorkspaceScreenProps = NativeStackScreenProps<RootStackParamList, 'DepartmentWorkspace'>;
 
+const ROLE_RANK: Record<string, number> = { User: 1, Supervisor: 2, Manager: 3, Admin: 4 };
+
 export default function DepartmentWorkspaceScreen({ route, navigation }: DepartmentWorkspaceScreenProps) {
   const { department } = route.params;
-  const { addCustomModule, customModules } = useAppContext();
+  const { addCustomModule, customModules, role } = useAppContext();
+  const canManageResources = role === 'Admin';
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -42,12 +45,15 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
     () =>
       customModules.filter(
         (module) =>
-          module.department === department ||
-          (module.type !== 'department' &&
-            (module.title.toLowerCase().includes(department.toLowerCase()) ||
-              module.department?.toLowerCase().includes(department.toLowerCase()))),
+          (module.department === department ||
+            (module.type !== 'department' &&
+              (module.title.toLowerCase().includes(department.toLowerCase()) ||
+                module.department?.toLowerCase().includes(department.toLowerCase())))) &&
+          (role === 'Admin' ||
+            role === 'Manager' ||
+            module.access.some((requiredRole) => ROLE_RANK[role] >= (ROLE_RANK[requiredRole] ?? Infinity))),
       ),
-    [customModules, department],
+    [customModules, department, role],
   );
 
   const handleAddResource = () => {
@@ -115,9 +121,11 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
             <Text style={styles.backText}>← Back</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity onPress={() => setIsAddOpen(true)} activeOpacity={0.8} style={styles.addButton}>
-            <Text style={styles.addButtonText}>+ Add</Text>
-          </TouchableOpacity>
+          {canManageResources ? (
+            <TouchableOpacity onPress={() => setIsAddOpen(true)} activeOpacity={0.8} style={styles.addButton}>
+              <Text style={styles.addButtonText}>+ Add</Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
 
         <Text style={styles.title}>{department}</Text>

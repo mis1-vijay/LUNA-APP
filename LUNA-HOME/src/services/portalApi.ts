@@ -159,7 +159,11 @@ export async function fetchDashboardData() {
 
     return {
       webApps: dashboardResources
-        .filter((resource) => resource.type === 'webapp')
+        .filter(
+          (resource) =>
+            resource.type === 'webapp' &&
+            normalizePortalRole(resource.required_role ?? 'User') !== 'Admin',
+        )
         .map((resource) => ({
           id: resource.id == null ? undefined : String(resource.id),
           title: resource.title ?? 'Portal App',
@@ -170,7 +174,11 @@ export async function fetchDashboardData() {
         })),
       departments: departments.map(buildDepartmentCard),
       reports: dashboardResources
-        .filter((resource) => resource.type === 'report' || resource.type === 'form' || resource.type === 'sheet')
+        .filter((resource) =>
+          resource.type !== 'webapp' &&
+          resource.type !== 'admin' &&
+          normalizePortalRole(resource.required_role ?? 'User') !== 'Admin',
+        )
         .map((resource) => ({
           id: resource.id == null ? undefined : String(resource.id),
           title: resource.title ?? 'Report',
@@ -221,27 +229,34 @@ export async function fetchSearchData() {
   return [
     ...dashboard.webApps.map((app) => ({
       title: app.title,
+      subtitle: app.subtitle,
       category: 'Web App' as const,
       role: app.access.map((role) => role.toLowerCase()),
       accent: app.accent,
+      url: app.url,
     })),
     ...dashboard.departments.map((department) => ({
       title: department.name,
+      subtitle: department.summary,
       category: 'Department' as const,
       role: department.access.map((role) => role.toLowerCase()),
       accent: department.accent,
     })),
     ...dashboard.reports.map((report) => ({
       title: report.title,
+      subtitle: report.subtitle,
       category: 'Report' as const,
       role: [report.role.toLowerCase()],
       accent: report.accent,
+      url: report.url,
     })),
     ...dashboard.adminResources.map((resource) => ({
       title: resource.title,
+      subtitle: resource.subtitle,
       category: 'Admin' as const,
       role: [resource.role.toLowerCase()],
       accent: resource.accent,
+      url: resource.url,
     })),
   ];
 }
@@ -331,11 +346,15 @@ export async function fetchAdminDepartments() {
   return requestBackend<Array<{ id: string; name: string; sort_order: number }>>('/api/admin/departments', 'GET');
 }
 
-export async function createAdminUser(user: AdminUserPayload) {
+export async function createAdminUser(user: AdminUserPayload & { password: string }) {
+  if (user.password.trim().length < 8) {
+    throw new Error('An initial password of at least 8 characters is required.');
+  }
+
   return requestBackend<Record<string, unknown>>('/api/admin/users', 'POST', {
     employee_id: user.employeeId,
     name: user.name,
-    password: user.password ?? 'luna123',
+    password: user.password.trim(),
     role: user.role,
     department: user.department ?? 'Operations',
     active: user.active ?? true,

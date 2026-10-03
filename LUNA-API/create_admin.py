@@ -1,24 +1,23 @@
-from supabase import create_client
+from getpass import getpass
+
+from database import get_supabase
 from passlib.context import CryptContext
 
-# CORRECTED URL (i ki jagah j hai)
-URL = "https://xvlkjsuquhriiqnpujjt.supabase.co"
-KEY = "sb_publishable_rxqPUrj9-tIsuVah5IWBNA_Yuw9aubZ"
+employee_id = input("Employee ID: ").strip()
+name = input("Employee name: ").strip()
+password = getpass("Initial password (at least 8 characters): ")
+if len(employee_id) < 3 or not name or len(password) < 8:
+    raise SystemExit("Employee ID, name, and a password of at least 8 characters are required.")
 
-print("Connecting to Supabase...")
-supabase = create_client(URL, KEY)
-
+supabase = get_supabase()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-hashed_password = pwd_context.hash("luna123")
-
 data = {
-    "employee_id": "11233",
-    "name": "Vijay Jadhav",
-    "password_hash": hashed_password,
+    "employee_id": employee_id,
+    "name": name,
+    "password_hash": pwd_context.hash(password),
     "role": "Admin",
-    "active": True
+    "active": True,
 }
 
-print("Inserting data...")
 supabase.table("users").insert(data).execute()
-print("Admin User 11233 Created Successfully! 🚀")
+print("Admin user created successfully.")

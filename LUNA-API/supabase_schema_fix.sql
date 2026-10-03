@@ -4,6 +4,16 @@ ALTER TABLE public.users
 ADD COLUMN IF NOT EXISTS department text,
     ADD COLUMN IF NOT EXISTS email text,
     ADD COLUMN IF NOT EXISTS phone text;
+
+CREATE TABLE IF NOT EXISTS public.password_reset_tokens (
+    employee_id text PRIMARY KEY,
+    token_hash text NOT NULL,
+    expires_at timestamptz NOT NULL,
+    requested_at timestamptz NOT NULL,
+    attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0)
+);
+ALTER TABLE public.password_reset_tokens ENABLE ROW LEVEL SECURITY;
+
 INSERT INTO public.departments (name, icon, sort_order)
 SELECT 'Packing',
     'package',

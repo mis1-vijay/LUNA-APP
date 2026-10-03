@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
-import { AUTH_LOGIN_URL } from '../config/api';
+import { Platform } from 'react-native';
+import { API_BASE_URL, AUTH_LOGIN_URL } from '../config/api';
 
 export type UserRole = 'Admin' | 'Manager' | 'Supervisor' | 'User';
 
@@ -40,7 +41,9 @@ function normalizeRole(role?: string): UserRole {
 
 export async function getAccessToken(): Promise<string | null> {
   try {
-    return await SecureStore.getItemAsync(TOKEN_KEY);
+    return Platform.OS === 'web'
+      ? await AsyncStorage.getItem(TOKEN_KEY)
+      : await SecureStore.getItemAsync(TOKEN_KEY);
   } catch (error) {
     console.warn('Failed to load access token', error);
     return null;
@@ -142,6 +145,38 @@ export async function signIn(employeeId: string, password: string): Promise<Auth
   }
 }
 
+async function postPasswordReset(path: string, body: Record<string, string>): Promise<void> {
+  if (!API_BASE_URL) {
+    throw new Error('EXPO_PUBLIC_API_BASE_URL is not configured.');
+  }
+
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({} as Record<string, unknown>));
+
+  if (!response.ok) {
+    throw new Error(typeof payload.detail === 'string' ? payload.detail : 'Password reset request failed.');
+  }
+}
+
+export async function requestPasswordReset(employeeId: string): Promise<void> {
+  await postPasswordReset('/api/auth/request-password-reset', { employee_id: employeeId.trim() });
+}
+
+export async function resetPassword(employeeId: string, code: string, password: string): Promise<void> {
+  await postPasswordReset('/api/auth/reset-password', {
+    employee_id: employeeId.trim(),
+    code: code.trim(),
+    password,
+  });
+}
+
 export async function loadStoredSession(): Promise<SessionUser | null> {
   try {
     const token = await getAccessToken();
@@ -177,7 +212,11 @@ export async function persistSession(user: SessionUser, token?: string) {
   await AsyncStorage.setItem(ROLE_KEY, user.role);
 
   if (token) {
-    await SecureStore.setItemAsync(TOKEN_KEY, token);
+    if (Platform.OS === 'web') {
+      await AsyncStorage.setItem(TOKEN_KEY, token);
+    } else {
+      await SecureStore.setItemAsync(TOKEN_KEY, token);
+    }
   }
 }
 
@@ -194,5 +233,9 @@ export async function updateSessionRole(role: UserRole, currentUser: SessionUser
 export async function clearSession() {
   await AsyncStorage.removeItem(STORAGE_KEY);
   await AsyncStorage.removeItem(ROLE_KEY);
-  await SecureStore.deleteItemAsync(TOKEN_KEY);
+  if (Platform.OS === 'web') {
+    await AsyncStorage.removeItem(TOKEN_KEY);
+  } else {
+    await SecureStore.deleteItemAsync(TOKEN_KEY);
+  }
 }
