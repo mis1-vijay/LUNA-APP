@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Linking,
   Modal,
   ScrollView,
   StyleSheet,
@@ -57,7 +56,7 @@ const ROLE_OPTIONS: PortalRoleLevel[] = ['User', 'Supervisor', 'Manager', 'Admin
 
 const canAccessRole = (currentRole: string | undefined, requiredRole?: string) => {
   const currentRoleName = currentRole?.trim().toLowerCase() ?? 'user';
-  if (currentRoleName === 'admin' || currentRoleName === 'manager') {
+  if (currentRoleName === 'admin') {
     return true;
   }
 
@@ -75,7 +74,7 @@ const normalizeLink = (value?: string) => {
 
 export default function HomeScreen({ navigation }: HomeScreenProps) {
   const stackNavigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { role, user, customModules, isFavorite, toggleFavorite, logout } = useAppContext();
+  const { role, user, customModules, isFavorite, toggleFavorite, logout, removeCustomModule } = useAppContext();
   const [dynamicWebApps, setDynamicWebApps] = useState<WebAppItem[]>([]);
   const [dynamicDepartments, setDynamicDepartments] = useState<DepartmentItem[]>([]);
   const [dynamicReports, setDynamicReports] = useState<PortalResource[]>([]);
@@ -125,7 +124,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
 
   const visibleWebApps = useMemo(
     () =>
-      [...dynamicWebApps, ...customModules.filter((item) => item.type === 'webApp').map((item) => ({
+      [...dynamicWebApps, ...customModules.filter((item) => item.type === 'webApp' && item.title.trim().toLowerCase() !== 'user access matrix').map((item) => ({
         title: item.title,
         subtitle: item.subtitle,
         accent: item.accent,
@@ -137,7 +136,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
 
   const displayedDepartments = useMemo(
     () =>
-      [...dynamicDepartments, ...customModules.filter((item) => item.type === 'department').map((item) => ({
+      [...dynamicDepartments, ...customModules.filter((item) => item.type === 'department' && item.title.trim().toLowerCase() !== 'user access matrix').map((item) => ({
         name: item.title,
         tags: ['Custom', 'Department'],
         accent: item.accent,
@@ -150,7 +149,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
 
   const visibleReports = useMemo(
     () =>
-      [...dynamicReports, ...customModules.filter((item) => item.type === 'report' || item.type === 'resource').map((item) => ({
+      [...dynamicReports, ...customModules.filter((item) => (item.type === 'report' || item.type === 'resource') && item.title.trim().toLowerCase() !== 'user access matrix').map((item) => ({
         id: item.id,
         title: item.title,
         subtitle: item.subtitle,
@@ -167,8 +166,10 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
     () =>
       [
         ...dynamicAdminResources,
-        ...(isAdmin ? [{ title: 'Admin Console', subtitle: 'Manage users, departments and modules', meta: 'Admin' as const, accent: '#5e1232', role: 'Admin', category: 'Admin' as const }] : []),
-      ].filter((item) => canAccessRole(role, item.role ?? 'Admin')),
+        ...(role === 'Admin' || role === 'Manager' ? [{ title: 'Admin Console', subtitle: 'View users and portal modules', meta: 'Admin' as const, accent: '#5e1232', role: 'Admin', category: 'Admin' as const }] : []),
+      ].filter((item) =>
+        (item.title === 'Admin Console' && role === 'Manager') || canAccessRole(role, item.role ?? 'Admin'),
+      ),
     [dynamicAdminResources, isAdmin, role],
   );
 
@@ -178,14 +179,19 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
 
   const handleModulePress = async (label: string, link?: string) => {
     if (label === 'Admin Console') {
-      if (isAdmin) {
+      if (role === 'Admin' || role === 'Manager') {
         navigation.navigate('AdminConsole');
       }
       return;
     }
 
-    if (link && link.trim().length > 0 && /^https?:\/\//i.test(link.trim())) {
-      await Linking.openURL(link.trim());
+    if (link && link.trim().length > 0) {
+      navigation.navigate('WebAppDetail', {
+        appName: label,
+        appSubtitle: 'Portal resource',
+        accent: '#5e1232',
+        url: link.trim(),
+      });
     }
   };
 
@@ -218,6 +224,13 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
       return;
     }
 
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(resource.id);
+    const legacyModule = customModules.find((module) => module.id === resource.id);
+    if (!isUuid && legacyModule) {
+      await removeCustomModule(resource.id);
+      return;
+    }
+
     Alert.alert('Delete resource', `Remove ${resource.title}?`, [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -226,6 +239,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
         onPress: async () => {
           try {
             await deleteResourceRecord(resource.id!);
+            await removeCustomModule(resource.id!);
             await loadData();
           } catch (error) {
             Alert.alert('Delete failed', error instanceof Error ? error.message : 'Unable to delete the resource.');

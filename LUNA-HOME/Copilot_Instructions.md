@@ -6,6 +6,37 @@ Build a reliable internal employee portal for LUNA TECH. Employees sign in with 
 
 This repository has working app and API flows, but it is not yet verified as production-ready. Treat the status below as a source-code assessment, not proof of a deployed or fully tested system.
 
+## Current repo status snapshot (updated 2026-10-05)
+
+### Completed / working in source
+
+- The Expo app includes the main employee portal screens: login, home, search, favorites, profile, department workspace, resource detail, and admin console.
+- The FastAPI backend includes JWT-based auth, password hashing, role checks, user lookup, and admin CRUD endpoints for users, departments, and resources.
+- Supabase-backed persistence is integrated, with startup seeding and default department ordering in place.
+- The app stores session state locally and routes users by role after login.
+- Local validation in the workspace has shown the frontend TypeScript check and backend Python compilation succeed for the checked-in source.
+
+### In progress / partially implemented
+
+- The backend still uses permissive CORS configuration and a wildcard allowlist instead of a locked production origin policy.
+- Several seeded resources and department defaults still use placeholder/example URLs, which is not acceptable for production data.
+- Department workspace additions and favorites behavior remain partially local or not fully aligned to a reviewed backend source of truth.
+- Password reset/profile flows exist in the API but still require a clear production decision and secure operational setup.
+- The app has a basic working flow, but it has not yet reached a full staging/production release gate.
+
+### Critical gaps before release
+
+- Remove hard-coded or default secrets, credentials, and example business data from source.
+- Require a real JWT secret from deployment secrets and eliminate unsafe development defaults.
+- Replace wildcard CORS and insecure web token storage assumptions with a reviewed production design.
+- Establish a real migration strategy and non-production database separation instead of relying on ad hoc scripts and live seed logic.
+- Add a real test suite and CI validation for API and frontend behavior.
+- Validate staging deployment, rollback, and operational readiness before any production rollout.
+
+### Where we are now
+
+We are at the implementation-complete / hardening phase, not the release-ready phase. The app and API are functional and aligned to the core portal use case, but the project still needs security, data, and deployment hardening before it should be treated as production-ready.
+
 ## Project status and production-readiness flow
 
 Status is based on the checked-in source and local workspace checks, not on a production deployment. Treat a stage as complete only when its exit criteria have been demonstrated in the target environment. Record decisions and evidence in the pull request or release record; do not infer production readiness from a successful local build.

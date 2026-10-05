@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, Linking, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -34,7 +34,7 @@ export default function SearchScreen() {
         const items = await fetchSearchData();
         const merged: SearchItem[] = [
           ...items,
-          ...customModules.map((item): SearchItem => ({
+          ...customModules.filter((item) => item.title.trim().toLowerCase() !== 'user access matrix').map((item): SearchItem => ({
             title: item.title,
             category: item.type === 'webApp' ? 'Web App' : item.type === 'department' ? 'Department' : 'Report',
             accent: item.accent,
@@ -58,7 +58,7 @@ export default function SearchScreen() {
   const filteredResources = useMemo(() => {
     return searchItems.filter((item) => {
       const itemRoles = Array.isArray(item.role) && item.role.length > 0 ? item.role : ['user'];
-      const matchesRole = role === 'Admin' || role === 'Manager' || itemRoles.some(
+      const matchesRole = role === 'Admin' || itemRoles.some(
         (requiredRole) => (ROLE_RANK[role.toLowerCase()] ?? 0) >= (ROLE_RANK[requiredRole.toLowerCase()] ?? Infinity),
       );
       const matchesQuery = item.title.toLowerCase().includes(query.toLowerCase());
@@ -78,16 +78,6 @@ export default function SearchScreen() {
     }
 
     if (item.url && item.category === 'Web App') {
-      const customWebApp = customModules.some((module) => module.title === item.title && module.type === 'webApp');
-      if (customWebApp) {
-        try {
-          await Linking.openURL(item.url);
-        } catch (error) {
-          Alert.alert('Unable to open link', error instanceof Error ? error.message : 'The selected resource could not be opened.');
-        }
-        return;
-      }
-
       navigation.navigate('WebAppDetail', {
         appName: item.title,
         appSubtitle: item.subtitle ?? 'Portal access',
@@ -98,11 +88,12 @@ export default function SearchScreen() {
     }
 
     if (item.url) {
-      try {
-        await Linking.openURL(item.url);
-      } catch (error) {
-        Alert.alert('Unable to open link', error instanceof Error ? error.message : 'The selected resource could not be opened.');
-      }
+      navigation.navigate('WebAppDetail', {
+        appName: item.title,
+        appSubtitle: item.subtitle ?? 'Portal resource',
+        accent: item.accent,
+        url: item.url,
+      });
       return;
     }
 

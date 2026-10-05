@@ -10,6 +10,7 @@ type DashboardResource = {
   meta?: string;
   accent?: string;
   category?: string;
+  viewing_level?: string;
   required_role?: string;
   access?: string[];
   role?: string;
@@ -129,28 +130,32 @@ export async function fetchDashboardData() {
       throw new Error('EXPO_PUBLIC_API_BASE_URL is not configured. Restart the app with start-luna.ps1.');
     }
 
-    const response = await fetch(`${API_BASE_URL}/api/portal/dashboard`, {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      signal: controller.signal,
-    });
+    const headers = {
+      Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
+    };
+    const [resourcesResponse, departmentsResponse] = await Promise.all([
+      fetch(`${API_BASE_URL}/api/resources`, { method: 'GET', headers, signal: controller.signal }),
+      fetch(`${API_BASE_URL}/api/admin/departments`, { method: 'GET', headers, signal: controller.signal }),
+    ]);
 
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({}));
+    if (!resourcesResponse.ok || !departmentsResponse.ok) {
+      const failedResponse = !resourcesResponse.ok ? resourcesResponse : departmentsResponse;
+      const body = await failedResponse.json().catch(() => ({}));
       throw new Error(body.detail ?? 'Unable to load dashboard data.');
     }
 
-    const payload = await response.json();
-    const resources: DashboardResource[] = Array.isArray(payload.resources) ? payload.resources : [];
-    const departments: DashboardDepartment[] = Array.isArray(payload.departments) ? payload.departments : [];
+    const [resourcePayload, departmentPayload] = await Promise.all([
+      resourcesResponse.json(),
+      departmentsResponse.json(),
+    ]);
+    const resources: DashboardResource[] = Array.isArray(resourcePayload) ? resourcePayload : [];
+    const departments: DashboardDepartment[] = Array.isArray(departmentPayload) ? departmentPayload : [];
 
   const dashboardResources = resources.map((resource) => ({
     ...resource,
     type: (resource.type ?? resource.category ?? 'report').toString().trim().toLowerCase(),
-    required_role: resource.required_role ?? resource.role ?? 'User',
+    required_role: resource.viewing_level ?? resource.required_role ?? resource.role ?? 'User',
     subtitle: resource.subtitle ?? resource.description ?? 'Portal item',
     url: resource.url ?? resource.link ?? undefined,
     link: resource.link ?? resource.url ?? undefined,
@@ -190,7 +195,10 @@ export async function fetchDashboardData() {
           url: resource.url ?? undefined,
         })),
       adminResources: dashboardResources
-        .filter((resource) => resource.type === 'admin' || normalizePortalRole(resource.required_role ?? 'User') === 'Admin')
+        .filter((resource) =>
+          (resource.type === 'admin' || normalizePortalRole(resource.required_role ?? 'User') === 'Admin') &&
+          resource.title?.trim().toLowerCase() !== 'user access matrix',
+        )
         .map((resource) => ({
           id: resource.id == null ? undefined : String(resource.id),
           title: resource.title ?? 'Admin Resource',
@@ -201,11 +209,28 @@ export async function fetchDashboardData() {
           category: 'Admin' as const,
           url: resource.url ?? undefined,
         })),
-      favorites: dashboardResources.slice(0, 3).map((resource) => ({
-        title: resource.title ?? 'Favorite Item',
-        category: resource.type === 'webapp' ? 'Web App' : resource.type === 'form' ? 'Report' : 'Report',
-        accent: resource.accent ?? '#0284c7',
-      })),
+      favorites: [
+        ...dashboardResources.filter((resource) => resource.title?.trim().toLowerCase() !== 'user access matrix').map((resource) => {
+          const requiredRole = normalizePortalRole(resource.required_role ?? 'User');
+          return {
+            title: resource.title ?? 'Resource',
+            category: requiredRole === 'Admin' || resource.type === 'admin'
+              ? 'Admin'
+              : resource.type === 'webapp'
+                ? 'Web App'
+                : 'Report',
+            accent: resource.accent ?? '#0284c7',
+            subtitle: resource.subtitle ?? 'Portal resource',
+            url: resource.url ?? undefined,
+          };
+        }),
+        ...departments.map((department) => ({
+          title: department.name ?? 'Department',
+          category: 'Department',
+          accent: department.accent ?? departmentAccentMap[department.name ?? ''] ?? '#0284c7',
+          subtitle: department.summary ?? `${department.name ?? 'Department'} workspace`,
+        })),
+      ],
     };
   } catch (error) {
     if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
@@ -271,6 +296,50 @@ export async function fetchAppDetail(name: string) {
   return dashboard.webApps.find((app) => app.title === name) ?? dashboard.webApps[0];
 }
 
+export type WorkspaceSettings = {
+  favorites: string[];
+  workspace_layout: Array<Record<string, unknown>>;
+};
+
+export async function fetchWorkspaceSettings(): Promise<WorkspaceSettings> {
+  const payload = await requestBackend<Record<string, unknown>>('/api/users/workspace', 'GET');
+  const favorites = Array.isArray(payload.favorites) ? payload.favorites.filter((value): value is string => typeof value === 'string') : [];
+  const workspaceLayout = Array.isArray(payload.workspace_layout)
+    ? (payload.workspace_layout.filter((value): value is Record<string, unknown> => typeof value === 'object' && value !== null) as Array<Record<string, unknown>>)
+    : [];
+
+  return { favorites, workspace_layout: workspaceLayout };
+}
+
+export async function saveWorkspaceSettings(favorites: string[], workspaceLayout: Array<Record<string, unknown>> = []) {
+  return requestBackend<Record<string, unknown>>('/api/users/workspace', 'PUT', {
+    favorites,
+    workspace_layout: workspaceLayout,
+  });
+}
+
+export async function fetchCurrentUserProfile() {
+  return requestBackend<Record<string, unknown>>('/api/users/me', 'GET');
+}
+
+export async function updateCurrentUserProfile(updates: {
+  name?: string;
+  department?: string;
+  email?: string;
+  phone?: string;
+  favorites?: string[];
+  workspace_layout?: Array<Record<string, unknown>>;
+}) {
+  return requestBackend<Record<string, unknown>>('/api/users/me', 'PUT', {
+    name: updates.name,
+    department: updates.department,
+    email: updates.email,
+    phone: updates.phone,
+    favorite_departments: updates.favorites,
+    workspace_layout: updates.workspace_layout,
+  });
+}
+
 export type AdminUserPayload = {
   employeeId: string;
   name: string;
@@ -304,10 +373,13 @@ async function requestBackend<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
 
-    const payload = await response.json().catch(() => ({}));
+    const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
 
     if (!response.ok) {
-      throw new Error(payload.detail ?? 'Request failed.');
+      const detail = [payload.detail, payload.message, payload.error].find(
+        (value): value is string => typeof value === 'string' && value.trim().length > 0,
+      );
+      throw new Error(detail ?? `Request failed with HTTP ${response.status}.`);
     }
 
     return payload as T;
@@ -323,8 +395,20 @@ async function requestBackend<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 
   }
 }
 
+export type PortalNotification = {
+  id: string;
+  message: string;
+  target_role_level: 'User' | 'Supervisor' | 'Manager' | 'Admin';
+  created_at: string;
+  is_read: boolean;
+};
+
+export async function fetchNotifications() {
+  return requestBackend<PortalNotification[]>('/api/notifications', 'GET');
+}
+
 export async function fetchAdminUsers() {
-  return requestBackend<Array<Record<string, unknown>>>('/api/admin/users', 'GET');
+  return requestBackend<Array<Record<string, unknown>>>('/api/users', 'GET');
 }
 
 export type AdminResourceRecord = {
@@ -335,7 +419,8 @@ export type AdminResourceRecord = {
   url: string;
   icon: string;
   department_id: string | null;
-  required_role: 'Admin' | 'Manager' | 'Supervisor' | 'User';
+  viewing_level: 'Admin' | 'Manager' | 'Supervisor' | 'User';
+  required_role?: 'Admin' | 'Manager' | 'Supervisor' | 'User';
 };
 
 export async function fetchAdminResources() {
@@ -358,7 +443,7 @@ export async function createAdminUser(user: AdminUserPayload & { password: strin
     role: user.role,
     department: user.department ?? 'Operations',
     active: user.active ?? true,
-    email: user.email ?? `${user.employeeId.trim().toUpperCase()}@LUNA.CO.IN`,
+    email: user.email?.trim() || undefined,
     phone: user.phone ?? 'Not set',
   });
 }
@@ -441,9 +526,7 @@ export async function createModule(data: {
     title: data.title,
     description: data.description ?? '',
     type: resourceType,
-    category: resourceType,
     url: data.url ?? data.link ?? null,
-    link: data.link ?? data.url ?? null,
     icon: data.icon ?? 'star',
     department_id: data.department_id ?? null,
     required_role: data.required_role ?? 'User',
@@ -466,8 +549,10 @@ export async function updateModule(id: string, data: {
   if (typeof payload.type !== 'undefined' || typeof payload.category !== 'undefined') {
     const nextType = normalizeResourceType((payload.category as string | undefined) ?? (payload.type as string | undefined) ?? 'webapp');
     payload.type = nextType;
-    payload.category = nextType;
   }
+  if (typeof payload.url === 'undefined' && typeof payload.link !== 'undefined') payload.url = payload.link;
+  delete payload.category;
+  delete payload.link;
 
   return requestBackend<Record<string, unknown>>(`/api/admin/resources/${encodeURIComponent(id)}`, 'PUT', payload);
 }
@@ -495,9 +580,7 @@ export async function createResourceRecord(resource: ResourceMutation) {
     title: resource.title,
     description: resource.description ?? '',
     type: resourceType,
-    category: resourceType,
     url: resource.url ?? resource.link ?? null,
-    link: resource.link ?? resource.url ?? null,
     icon: resource.icon ?? 'star',
     department_id: resource.department_id ?? null,
     required_role: resource.required_role ?? 'User',
@@ -510,8 +593,10 @@ export async function updateResourceRecord(resourceId: string, updates: Partial<
   if (typeof payload.type !== 'undefined' || typeof payload.category !== 'undefined') {
     const nextType = normalizeResourceType((payload.category as string | undefined) ?? (payload.type as string | undefined) ?? 'webapp');
     payload.type = nextType;
-    payload.category = nextType;
   }
+  if (typeof payload.url === 'undefined' && typeof payload.link !== 'undefined') payload.url = payload.link;
+  delete payload.category;
+  delete payload.link;
 
   return requestBackend<Record<string, unknown>>(`/api/admin/resources/${encodeURIComponent(resourceId)}`, 'PUT', payload);
 }

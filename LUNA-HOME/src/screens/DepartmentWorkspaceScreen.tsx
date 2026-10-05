@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Linking,
   Modal,
   ScrollView,
   StyleSheet,
@@ -45,18 +44,18 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
     () =>
       customModules.filter(
         (module) =>
+          module.title.trim().toLowerCase() !== 'user access matrix' &&
           (module.department === department ||
             (module.type !== 'department' &&
               (module.title.toLowerCase().includes(department.toLowerCase()) ||
                 module.department?.toLowerCase().includes(department.toLowerCase())))) &&
           (role === 'Admin' ||
-            role === 'Manager' ||
             module.access.some((requiredRole) => ROLE_RANK[role] >= (ROLE_RANK[requiredRole] ?? Infinity))),
       ),
     [customModules, department, role],
   );
 
-  const handleAddResource = () => {
+  const handleAddResource = async () => {
     if (!newTitle.trim()) {
       Alert.alert('Missing title', 'Enter a resource name before saving.');
       return;
@@ -67,23 +66,27 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
       return;
     }
 
-    const newModule: CustomModule = {
-      id: `${newType}-${Date.now()}`,
-      type: newType,
-      title: newTitle.trim(),
-      subtitle: newSubtitle.trim() || 'Custom resource',
-      accent: '#0284c7',
-      link: newLink.trim() || 'https://example.com',
-      access: ['Admin', 'Manager', 'Supervisor', 'User'],
-      department,
-    };
+    try {
+      const newModule: CustomModule = {
+        id: `${newType}-${Date.now()}`,
+        type: newType,
+        title: newTitle.trim(),
+        subtitle: newSubtitle.trim() || 'Custom resource',
+        accent: '#0284c7',
+        link: newLink.trim() || 'https://example.com',
+        access: ['Admin', 'Manager', 'Supervisor', 'User'],
+        department,
+      };
 
-    addCustomModule(newModule);
-    setIsAddOpen(false);
-    setNewTitle('');
-    setNewSubtitle('');
-    setNewLink('');
-    setNewType('resource');
+      await addCustomModule(newModule);
+      setIsAddOpen(false);
+      setNewTitle('');
+      setNewSubtitle('');
+      setNewLink('');
+      setNewType('resource');
+    } catch (error) {
+      Alert.alert('Save failed', error instanceof Error ? error.message : 'The department workspace could not be saved.');
+    }
   };
 
   if (isLoading) {
@@ -156,14 +159,18 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
             departmentModules.map((item) => (
               <TouchableOpacity
                 key={item.id}
-                onPress={async () => {
-                  try {
-                    if (item.link && /^https?:\/\//i.test(item.link)) {
-                      await Linking.openURL(item.link);
-                    }
-                  } catch (error) {
-                    Alert.alert('Unable to open link', error instanceof Error ? error.message : 'The selected resource could not be opened.');
+                onPress={() => {
+                  if (item.link) {
+                    navigation.navigate('WebAppDetail', {
+                      appName: item.title,
+                      appSubtitle: item.subtitle ?? 'Department resource',
+                      accent: '#0284c7',
+                      url: item.link,
+                    });
+                    return;
                   }
+
+                  Alert.alert('Unable to open resource', 'This department item does not have a destination URL yet.');
                 }}
                 activeOpacity={0.8}
                 style={styles.rowItem}

@@ -1,18 +1,24 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import Header from '../components/Header';
 import { useAppContext } from '../context/AppContext';
 import { fetchFavoritesData } from '../services/portalApi';
+import type { RootStackParamList } from '../types';
 
 type FavoriteItem = {
   title: string;
   category: string;
   accent: string;
+  subtitle?: string;
+  url?: string;
 };
 
 export default function FavoritesScreen() {
-  const { favorites, toggleFavorite } = useAppContext();
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const { favorites, toggleFavorite, customModules, role } = useAppContext();
   const [favoriteItems, setFavoriteItems] = useState<FavoriteItem[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -32,10 +38,59 @@ export default function FavoritesScreen() {
     void loadFavorites();
   }, []);
 
-  const visibleFavorites = useMemo(
-    () => favoriteItems.filter((item) => favorites.includes(`${item.category}:${item.title}`)),
-    [favoriteItems, favorites],
-  );
+  const visibleFavorites = useMemo(() => {
+    const catalog = new Map<string, FavoriteItem>();
+    for (const item of favoriteItems) {
+      catalog.set(`${item.category}:${item.title}`, item);
+    }
+    for (const module of customModules) {
+      const roleRanks: Record<string, number> = { User: 1, Supervisor: 2, Manager: 3, Admin: 4 };
+      const currentRank = roleRanks[role] ?? 0;
+      const moduleIsVisible = role === 'Admin' || module.access.some((requiredRole) => currentRank >= (roleRanks[requiredRole] ?? Infinity));
+      if (module.title.trim().toLowerCase() === 'user access matrix' || !moduleIsVisible) {
+        continue;
+      }
+
+      const category = module.type === 'webApp' || module.type === 'webapp'
+        ? 'Web App'
+        : module.type === 'department'
+          ? 'Department'
+          : 'Report';
+      const key = `${category}:${module.title}`;
+      if (!catalog.has(key)) {
+        catalog.set(key, {
+          title: module.title,
+          category,
+          accent: module.accent,
+          subtitle: module.subtitle,
+          url: module.link,
+        });
+      }
+    }
+
+    return favorites
+      .map((key) => catalog.get(key))
+      .filter((item): item is FavoriteItem => item !== undefined);
+  }, [customModules, favoriteItems, favorites, role]);
+
+  const openFavorite = (item: FavoriteItem) => {
+    if (item.category === 'Department') {
+      navigation.navigate('DepartmentWorkspace', { department: item.title });
+      return;
+    }
+
+    if (item.url) {
+      navigation.navigate('WebAppDetail', {
+        appName: item.title,
+        appSubtitle: item.subtitle ?? (item.category === 'Web App' ? 'Portal access' : 'Portal resource'),
+        accent: item.accent,
+        url: item.url,
+      });
+      return;
+    }
+
+    Alert.alert('Unable to open resource', 'This resource does not have a destination URL yet.');
+  };
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -50,11 +105,13 @@ export default function FavoritesScreen() {
         ) : visibleFavorites.length > 0 ? (
           visibleFavorites.map((item, index) => (
             <View key={`${item.title}-${item.category}-${index}`} style={styles.favoriteItem}>
-              <View style={[styles.dot, { backgroundColor: item.accent }]} />
-              <View style={styles.textWrap}>
-                <Text style={styles.favoriteTitle}>{item.title}</Text>
-                <Text style={styles.favoriteMeta}>{item.category}</Text>
-              </View>
+              <TouchableOpacity style={styles.favoriteContent} activeOpacity={0.8} onPress={() => openFavorite(item)}>
+                <View style={[styles.dot, { backgroundColor: item.accent }]} />
+                <View style={styles.textWrap}>
+                  <Text style={styles.favoriteTitle}>{item.title}</Text>
+                  <Text style={styles.favoriteMeta}>{item.category}</Text>
+                </View>
+              </TouchableOpacity>
               <TouchableOpacity
                 activeOpacity={0.8}
                 style={styles.favoriteButton}
@@ -99,6 +156,11 @@ const styles = StyleSheet.create({
     borderColor: '#e2e8f0',
     padding: 14,
     marginBottom: 10,
+  },
+  favoriteContent: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   dot: {
     width: 10,

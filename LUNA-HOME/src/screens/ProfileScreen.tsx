@@ -1,19 +1,58 @@
-import React from 'react';
-import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import Header from '../components/Header';
 import { useAppContext } from '../context/AppContext';
+import { fetchCurrentUserProfile, updateCurrentUserProfile } from '../services/portalApi';
 import type { RootStackParamList } from '../types';
 
 export default function ProfileScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { role, user, logout } = useAppContext();
+  const [name, setName] = useState(user?.name ?? '');
+  const [department, setDepartment] = useState(user?.department ?? 'Operations');
+  const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    const loadProfile = async () => {
+      try {
+        const profile = await fetchCurrentUserProfile();
+        setName(String(profile.name ?? user?.name ?? ''));
+        setDepartment(String(profile.department ?? user?.department ?? 'Operations'));
+        setEmail(String(profile.email ?? ''));
+        setPhone(String(profile.phone ?? ''));
+      } catch (error) {
+        Alert.alert('Profile unavailable', error instanceof Error ? error.message : 'Unable to load your profile details.');
+      }
+    };
+
+    void loadProfile();
+  }, [user?.employeeId]);
 
   const handleLogout = async () => {
     await logout();
     navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+  };
+
+  const handleSaveProfile = async () => {
+    try {
+      setIsSaving(true);
+      await updateCurrentUserProfile({
+        name,
+        department,
+        email,
+        phone,
+      });
+      Alert.alert('Profile updated', 'Your account details have been saved successfully.');
+    } catch (error) {
+      Alert.alert('Update failed', error instanceof Error ? error.message : 'The profile could not be saved.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -29,31 +68,33 @@ export default function ProfileScreen() {
 
           <View style={styles.card}>
             <Text style={styles.label}>Employee</Text>
-            <Text style={styles.value}>{user?.name ?? 'Vijay Jadhav'}</Text>
+            <Text style={styles.value}>{(user?.name ?? name) || 'Employee'}</Text>
             <Text style={styles.label}>Employee ID</Text>
-            <Text style={styles.value}>{user?.employeeId ?? '11233'}</Text>
-            <Text style={styles.label}>Department</Text>
-            <Text style={styles.value}>{user?.department ?? 'Operations'}</Text>
+            <Text style={styles.value}>{user?.employeeId ?? 'Unknown'}</Text>
             <Text style={styles.label}>Current Role</Text>
             <Text style={styles.roleBadge}>{role}</Text>
           </View>
 
           <View style={styles.card}>
-            <Text style={styles.sectionTitle}>Account settings</Text>
-            <TouchableOpacity
-              style={styles.actionButton}
-              activeOpacity={0.8}
-              onPress={() => Alert.alert('Password update', 'Password update flow is ready for the admin backend integration.')}
-            >
-              <Text style={styles.actionButtonText}>Update password</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.actionButton}
-              activeOpacity={0.8}
-              onPress={() => Alert.alert('Employee details', 'Basic employee data is managed by the admin during user creation.')}
-            >
-              <Text style={styles.actionButtonText}>Employee details</Text>
-            </TouchableOpacity>
+            <Text style={styles.sectionTitle}>Account details</Text>
+
+            <Text style={styles.inputLabel}>Full name</Text>
+            <TextInput value={name} onChangeText={setName} style={styles.input} placeholder="Enter full name" editable={role !== 'Manager'} />
+
+            <Text style={styles.inputLabel}>Department</Text>
+            <TextInput value={department} onChangeText={setDepartment} style={styles.input} placeholder="Operations" editable={role !== 'Manager'} />
+
+            <Text style={styles.inputLabel}>Email</Text>
+            <TextInput value={email} onChangeText={setEmail} style={styles.input} placeholder="Email address" keyboardType="email-address" autoCapitalize="none" editable={role !== 'Manager'} />
+
+            <Text style={styles.inputLabel}>Phone</Text>
+            <TextInput value={phone} onChangeText={setPhone} style={styles.input} placeholder="+91 98xxxxxx" keyboardType="phone-pad" editable={role !== 'Manager'} />
+
+            {role !== 'Manager' ? (
+              <TouchableOpacity style={styles.saveButton} onPress={() => void handleSaveProfile()} disabled={isSaving} activeOpacity={0.9}>
+                <Text style={styles.saveButtonText}>{isSaving ? 'Saving...' : 'Save profile'}</Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
 
           <TouchableOpacity style={styles.logoutButton} onPress={() => void handleLogout()} activeOpacity={0.9}>
@@ -117,6 +158,38 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '800',
     marginBottom: 12,
+  },
+  inputLabel: {
+    color: '#475569',
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 12,
+    marginBottom: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  input: {
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    color: '#0f172a',
+    fontSize: 15,
+    marginBottom: 10,
+  },
+  saveButton: {
+    backgroundColor: '#5e1232',
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  saveButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '700',
   },
   actionButton: {
     backgroundColor: '#eef2ff',

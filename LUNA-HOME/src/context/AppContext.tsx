@@ -1,5 +1,4 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   clearSession,
   loadStoredSession,
@@ -11,6 +10,8 @@ import {
   createAdminUser,
   deleteAdminUser as deleteAdminUserRemote,
   fetchAdminUsers,
+  fetchWorkspaceSettings,
+  saveWorkspaceSettings,
   updateAdminUser as updateAdminUserRemote,
 } from '../services/portalApi';
 
@@ -44,7 +45,7 @@ type AppContextValue = {
   login: (employeeId: string, password: string) => Promise<{ success: boolean; message?: string; role?: UserRole }>;
   logout: () => Promise<void>;
   favorites: string[];
-  toggleFavorite: (key: string) => void;
+  toggleFavorite: (key: string) => Promise<void>;
   isFavorite: (key: string) => boolean;
   adminUsers: AdminManagedUser[];
   refreshAdminUsers: () => Promise<void>;
@@ -52,12 +53,9 @@ type AppContextValue = {
   updateAdminUser: (id: string, updates: Partial<AdminManagedUser>) => Promise<void>;
   deleteAdminUser: (id: string) => Promise<void>;
   customModules: CustomModule[];
-  addCustomModule: (module: CustomModule) => void;
-  removeCustomModule: (moduleId: string) => void;
+  addCustomModule: (module: CustomModule) => Promise<void>;
+  removeCustomModule: (moduleId: string) => Promise<void>;
 };
-
-const FAVORITES_KEY = 'luna-favorites';
-const CUSTOM_MODULES_KEY = 'luna-custom-modules';
 
 const AppContext = createContext<AppContextValue | undefined>(undefined);
 
@@ -68,20 +66,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [favorites, setFavorites] = useState<string[]>([]);
   const [adminUsers, setAdminUsers] = useState<AdminManagedUser[]>([]);
   const [customModules, setCustomModules] = useState<CustomModule[]>([]);
+  const [hasLoadedWorkspace, setHasLoadedWorkspace] = useState(false);
 
   useEffect(() => {
     const loadSession = async () => {
       const savedUser = await loadStoredSession();
-      const storedFavorites = await AsyncStorage.getItem(FAVORITES_KEY);
-      const storedCustomModules = await AsyncStorage.getItem(CUSTOM_MODULES_KEY);
-
-      if (storedFavorites) {
-        setFavorites(JSON.parse(storedFavorites) as string[]);
-      }
-
-      if (storedCustomModules) {
-        setCustomModules(JSON.parse(storedCustomModules) as CustomModule[]);
-      }
 
       if (!savedUser) {
         setUser(null);
@@ -99,12 +88,44 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    void AsyncStorage.setItem(FAVORITES_KEY, JSON.stringify(favorites));
-  }, [favorites]);
+    if (!isAuthenticated || !user) {
+      setFavorites([]);
+      setCustomModules([]);
+      setHasLoadedWorkspace(false);
+      return;
+    }
+
+    const loadWorkspace = async () => {
+      try {
+        const workspace = await fetchWorkspaceSettings();
+        setFavorites(Array.isArray(workspace.favorites) ? workspace.favorites : []);
+        setCustomModules(Array.isArray(workspace.workspace_layout) ? (workspace.workspace_layout as CustomModule[]) : []);
+        setHasLoadedWorkspace(true);
+      } catch (error) {
+        console.warn('Failed to load workspace settings', error);
+        setFavorites([]);
+        setCustomModules([]);
+      }
+    };
+
+    void loadWorkspace();
+  }, [isAuthenticated, user]);
 
   useEffect(() => {
-    void AsyncStorage.setItem(CUSTOM_MODULES_KEY, JSON.stringify(customModules));
-  }, [customModules]);
+    if (!isAuthenticated || !user || !hasLoadedWorkspace) {
+      return;
+    }
+
+    const persistWorkspace = async () => {
+      try {
+        await saveWorkspaceSettings(favorites, customModules as Array<Record<string, unknown>>);
+      } catch (error) {
+        console.warn('Failed to persist workspace settings', error);
+      }
+    };
+
+    void persistWorkspace();
+  }, [favorites, customModules, isAuthenticated, hasLoadedWorkspace, user]);
 
   const login = async (employeeId: string, password: string) => {
     const result = await signIn(employeeId, password);
@@ -127,10 +148,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     await clearSession();
   };
 
-  const toggleFavorite = (key: string) => {
-    setFavorites((current) =>
-      current.includes(key) ? current.filter((item) => item !== key) : [...current, key],
-    );
+  const toggleFavorite = async (key: string) => {
+    const nextFavorites = favorites.includes(key)
+      ? favorites.filter((item) => item !== key)
+      : [...favorites, key];
+
+    setFavorites(nextFavorites);
+
+    if (!isAuthenticated || !user) {
+      return;
+    }
+
+    try {
+      await saveWorkspaceSettings(nextFavorites, customModules as Array<Record<string, unknown>>);
+    } catch (error) {
+      console.warn('Failed to persist favorites to backend', error);
+      setFavorites(favorites);
+    }
   };
 
   const isFavorite = (key: string) => favorites.includes(key);
@@ -161,7 +195,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!password || password.trim().length < 8) {
       throw new Error('An initial password of at least 8 characters is required.');
     }
-    await createAdminUser({ ...safeUser, password: password.trim(), email: safeUser.email.trim().toLowerCase() });
+    await createAdminUser({ ...safeUser, password: password.trim(), email: safeUser.email.trim() });
     await refreshAdminUsers();
   };
 
@@ -193,7 +227,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     await refreshAdminUsers();
   };
 
-  const addCustomModule = (module: CustomModule) => {
+  const addCustomModule = async (module: CustomModule) => {
     setCustomModules((current) => {
       const existingIndex = current.findIndex((item) => item.id === module.id);
       if (existingIndex >= 0) {
@@ -205,7 +239,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     });
   };
 
-  const removeCustomModule = (moduleId: string) => {
+  const removeCustomModule = async (moduleId: string) => {
     setCustomModules((current) => current.filter((item) => item.id !== moduleId));
   };
 

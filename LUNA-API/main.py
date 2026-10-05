@@ -3,13 +3,18 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
+import logging
 import os
 import secrets
 import smtplib
+import uuid
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -20,8 +25,11 @@ from database import get_supabase
 from models import (
     DepartmentCreate,
     DepartmentResponse,
+    NotificationCreate,
+    NotificationResponse,
     PasswordResetConfirm,
     PasswordResetRequest,
+    ProfileUpdate,
     ResourceCreate,
     ResourceResponse,
     ResourceUpdate,
@@ -29,9 +37,27 @@ from models import (
     UserCreate,
     UserLogin,
     UserUpdate,
+    WorkspaceSettingsUpdate,
 )
 
+for environment_variable in (
+    "SUPABASE_URL",
+    "SUPABASE_KEY",
+    "JWT_SECRET_KEY",
+    "SMTP_HOST",
+    "SMTP_PORT",
+    "SMTP_USERNAME",
+    "SMTP_PASSWORD",
+    "SMTP_FROM_EMAIL",
+):
+    if not os.getenv(environment_variable, "").strip():
+        os.environ.pop(environment_variable, None)
+
+load_dotenv()
+load_dotenv(Path(__file__).resolve().parent / ".env")
+
 app = FastAPI(title="Luna Tech Portal API", version="1.0.0")
+logger = logging.getLogger(__name__)
 
 app.add_middleware(
     CORSMiddleware,
@@ -107,19 +133,49 @@ def create_access_token(employee_id: str, role: str) -> str:
 def get_jwt_secret_key() -> str:
     secret_key = os.getenv("JWT_SECRET_KEY")
     if not secret_key:
-        raise RuntimeError("Missing required environment variable: JWT_SECRET_KEY")
+        raise RuntimeError(
+            "Missing required environment variable JWT_SECRET_KEY. "
+            "Set a strong random value in LUNA-API/.env or the deployment environment."
+        )
     return secret_key
 
 
 def has_access(user_role: str, required_role: Optional[str]) -> bool:
     normalized_user_role = normalize_required_role(user_role)
-    if normalized_user_role in {"Admin", "Manager"}:
+    if normalized_user_role == "Admin":
         return True
 
     normalized_required_role = normalize_required_role(required_role)
     user_priority = ROLE_PRIORITY.get(normalized_user_role, 0)
     required_priority = ROLE_PRIORITY.get(normalized_required_role, 0)
     return user_priority > 0 and required_priority > 0 and user_priority >= required_priority
+
+
+def visible_resource_levels(user_role: str) -> Optional[List[str]]:
+    normalized_role = normalize_required_role(user_role)
+    if normalized_role == "Admin":
+        return None
+
+    return {
+        "User": ["User"],
+        "Supervisor": ["User", "Supervisor"],
+        "Manager": ["User", "Supervisor", "Manager"],
+    }.get(normalized_role, ["User"])
+
+
+def fetch_visible_resources(supabase: Any, user_role: str) -> List[Dict[str, Any]]:
+    query = supabase.table("resources").select("*")
+    allowed_levels = visible_resource_levels(user_role)
+    if allowed_levels is not None:
+        query = query.in_("viewing_level", allowed_levels)
+    response = query.execute()
+    return response.data or []
+
+
+def notification_role_allows(user_role: str, target_role_level: str) -> bool:
+    user_priority = ROLE_PRIORITY.get(normalize_required_role(user_role), 0)
+    target_priority = ROLE_PRIORITY.get(normalize_required_role(target_role_level), 0)
+    return user_priority > 0 and target_priority > 0 and user_priority >= target_priority
 
 
 def get_user_by_employee_id(employee_id: str) -> Optional[Dict[str, Any]]:
@@ -130,38 +186,61 @@ def get_user_by_employee_id(employee_id: str) -> Optional[Dict[str, Any]]:
     return response.data[0]
 
 
-def insert_user_record(supabase: Any, user_record: Dict[str, Any]) -> Any:
+def serialize_jsonb_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (str, bytes)):
+        return value
     try:
-        return supabase.table("users").insert(user_record).execute()
-    except Exception as exc:  # pragma: no cover - fallback for live schema drift
-        error_text = str(exc).lower()
-        if "department" not in error_text or (
-            "does not exist" not in error_text
-            and "could not find" not in error_text
-            and "schema cache" not in error_text
-        ):
-            raise
+        return json.dumps(value)
+    except (TypeError, ValueError):
+        return value
 
-        fallback_record = {key: value for key, value in user_record.items() if key != "department"}
-        return supabase.table("users").insert(fallback_record).execute()
+
+def deserialize_jsonb_value(value: Any) -> Any:
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        try:
+            parsed = json.loads(stripped)
+            return parsed if isinstance(parsed, (list, dict)) else value
+        except (TypeError, ValueError):
+            return value
+    return value
+
+
+def build_user_profile_record(user: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "employee_id": str(user.get("employee_id") or ""),
+        "name": str(user.get("name") or "Employee"),
+        "role": str(user.get("role") or "User"),
+        "department": str(user.get("department") or "Operations"),
+        "email": user.get("email") or "",
+        "phone": user.get("phone") or "",
+        "favorites": deserialize_jsonb_value(user.get("favorite_departments")) or [],
+        "workspace_layout": deserialize_jsonb_value(user.get("workspace_layout")) or [],
+    }
+
+
+def insert_user_record(supabase: Any, user_record: Dict[str, Any]) -> Any:
+    for key in ("favorite_departments", "workspace_layout"):
+        if key in user_record and user_record[key] is not None:
+            user_record[key] = serialize_jsonb_value(user_record[key])
+    return supabase.table("users").insert(user_record).execute()
 
 
 def update_user_record(supabase: Any, employee_id: str, data: Dict[str, Any]) -> Any:
-    try:
-        return supabase.table("users").update(data).eq("employee_id", employee_id).execute()
-    except Exception as exc:  # pragma: no cover - fallback for live schema drift
-        error_text = str(exc).lower()
-        if "department" not in error_text or (
-            "does not exist" not in error_text
-            and "could not find" not in error_text
-            and "schema cache" not in error_text
-        ):
-            raise
-
-        fallback_data = {key: value for key, value in data.items() if key != "department"}
-        if not fallback_data:
-            raise
-        return supabase.table("users").update(fallback_data).eq("employee_id", employee_id).execute()
+    for key in ("favorite_departments", "workspace_layout"):
+        if key in data and data[key] is not None:
+            data[key] = serialize_jsonb_value(data[key])
+    return (
+        supabase.table("users")
+        .update(data)
+        .eq("employee_id", employee_id)
+        .select("*")
+        .execute()
+    )
 
 
 def get_current_user(
@@ -210,6 +289,15 @@ def require_admin(current_user: Dict[str, Any] = Depends(get_current_user)) -> D
             detail="Admin access required",
         )
 
+    return current_user
+
+
+def require_admin_or_manager(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+    if str(current_user.get("role") or "User") not in {"Admin", "Manager"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin or Manager access required",
+        )
     return current_user
 
 
@@ -333,34 +421,49 @@ def normalize_required_role(value: Optional[str]) -> str:
 
 def normalize_resource_payload(data: Dict[str, Any], apply_defaults: bool = False) -> Dict[str, Any]:
     payload = {key: value for key, value in data.items() if value is not None}
-    if "category" in payload and not payload.get("category"):
-        payload.pop("category")
     if "type" in payload and not payload.get("type"):
         payload.pop("type")
+
+    payload.pop("category", None)
 
     if "link" in payload and "url" not in payload:
         payload["url"] = payload["link"]
     elif "link" in payload and payload["link"]:
         payload["url"] = payload["link"]
+    payload.pop("link", None)
 
     if "url" in payload and payload.get("url"):
         payload["url"] = str(payload["url"]).strip()
 
-    if "required_role" in payload:
-        payload["required_role"] = normalize_required_role(str(payload["required_role"]))
-    elif "role" in payload:
-        payload["required_role"] = normalize_required_role(str(payload["role"]))
+    resource_level = payload.get("viewing_level") or payload.get("required_role") or payload.get("role")
+    payload.pop("required_role", None)
+    payload.pop("role", None)
+    if resource_level is not None:
+        payload["viewing_level"] = normalize_required_role(str(resource_level))
 
-    if "type" in payload or "category" in payload or apply_defaults:
-        type_value = payload.get("type") or payload.get("category") or "webapp"
+    if "type" in payload or apply_defaults:
+        type_value = payload.get("type") or "webapp"
         normalized_type = normalize_resource_kind(type_value)
         payload["type"] = normalized_type
-        payload["category"] = normalized_type
 
     if apply_defaults:
-        payload.setdefault("required_role", "User")
+        payload.setdefault("viewing_level", "User")
 
     return payload
+
+
+def ensure_valid_backend_id(raw_value: Any, field_name: str) -> str:
+    value = str(raw_value or "").strip()
+    if not value:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{field_name} is required.")
+
+    try:
+        return str(uuid.UUID(value))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid {field_name}. Refresh the list and retry.",
+        ) from exc
 
 
 def ensure_unique_module_title(supabase: Any, title: str, excluded_id: Optional[str] = None) -> None:
@@ -387,9 +490,10 @@ def normalize_department_sort_order(supabase: Any) -> None:
         if desired_order is None:
             continue
 
+        department_id = department.get("id")
         current_order = department.get("sort_order")
-        if current_order != desired_order:
-            supabase.table("departments").update({"sort_order": desired_order}).eq("id", department["id"]).execute()
+        if current_order != desired_order and department_id is not None:
+            supabase.table("departments").update({"sort_order": desired_order}).eq("id", department_id).execute()
 
 
 def ensure_seed_data() -> Dict[str, int]:
@@ -416,17 +520,16 @@ def ensure_seed_data() -> Dict[str, int]:
             department = department_lookup.get(str(resource["department"]).lower())
             if not department:
                 continue
+            department_id = department.get("id")
             seed_rows.append(
                 {
                     "title": resource["title"],
                     "description": resource.get("description"),
                     "type": normalize_resource_kind(resource.get("type", "web_app")),
-                    "category": normalize_resource_kind(resource.get("type", "web_app")),
                     "url": resource.get("url"),
-                    "link": resource.get("url"),
                     "icon": resource.get("icon"),
-                    "department_id": department["id"],
-                    "required_role": resource.get("required_role"),
+                    "department_id": department_id,
+                    "viewing_level": resource.get("required_role"),
                 }
             )
 
@@ -443,10 +546,10 @@ def ensure_seed_data() -> Dict[str, int]:
 @app.on_event("startup")
 def startup() -> None:
     get_jwt_secret_key()
-    ensure_seed_data()
 
 
 @app.post("/api/auth/login", response_model=Token)
+@app.post("/token", response_model=Token)
 def login(payload: UserLogin) -> Token:
     user = get_user_by_employee_id(payload.employee_id)
     if not user:
@@ -467,6 +570,74 @@ def login(payload: UserLogin) -> Token:
         employee_id=str(user.get("employee_id") or ""),
         department=str(user.get("department") or "Operations"),
     )
+
+
+@app.get("/api/users/me")
+def get_current_user_profile(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+    return build_user_profile_record(current_user)
+
+
+@app.put("/api/users/me")
+def update_current_user_profile(
+    payload: ProfileUpdate,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    employee_id = str(current_user.get("employee_id") or "")
+    data = payload.model_dump(exclude_unset=True)
+    for field in ("name", "department", "phone"):
+        if field in data and isinstance(data[field], str):
+            data[field] = data[field].strip()
+    if "email" in data and data["email"] is None:
+        data["email"] = ""
+
+    if data:
+        response = update_user_record(get_supabase(), employee_id, data)
+        if not response.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        current_user = {**current_user, **response.data[0]}
+
+    return build_user_profile_record(current_user)
+
+
+@app.get("/api/users/workspace")
+def get_user_workspace(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+    profile = build_user_profile_record(current_user)
+    return {
+        "favorites": profile["favorites"],
+        "workspace_layout": profile["workspace_layout"],
+    }
+
+
+@app.put("/api/users/workspace")
+def save_user_workspace(
+    payload: WorkspaceSettingsUpdate,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    employee_id = str(current_user.get("employee_id") or "")
+    data = payload.model_dump(exclude_unset=True)
+    if "favorites" in data:
+        favorites = [value.strip() for value in data.pop("favorites") if value.strip()]
+        data["favorite_departments"] = serialize_jsonb_value(favorites)
+
+    if "workspace_layout" in data:
+        data["workspace_layout"] = serialize_jsonb_value(data["workspace_layout"])
+
+    if data:
+        try:
+            response = update_user_record(get_supabase(), employee_id, data)
+        except HTTPException:
+            raise
+        except Exception as exc:  # pragma: no cover - defensive backend guard
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Workspace update failed: {exc}") from exc
+        if not response.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        current_user = {**current_user, **response.data[0]}
+
+    profile = build_user_profile_record(current_user)
+    return {
+        "favorites": profile["favorites"],
+        "workspace_layout": profile["workspace_layout"],
+    }
 
 
 @app.post("/api/auth/request-password-reset")
@@ -571,20 +742,16 @@ def reset_password(payload: PasswordResetConfirm) -> Dict[str, str]:
 
 @app.get("/api/portal/dashboard")
 def get_dashboard(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
-    ensure_seed_data()
     supabase = get_supabase()
     user_role = str(current_user.get("role", "User"))
     departments_response = supabase.table("departments").select("*").order("sort_order").execute()
-    resources_response = supabase.table("resources").select("*").execute()
+    resources = fetch_visible_resources(supabase, user_role)
 
     departments: List[DepartmentResponse] = [
         DepartmentResponse(**department) for department in departments_response.data
     ]
 
-    accessible_resources: List[ResourceResponse] = []
-    for resource in resources_response.data:
-        if has_access(user_role, resource.get("required_role")):
-            accessible_resources.append(ResourceResponse(**resource))
+    accessible_resources = [ResourceResponse(**resource) for resource in resources]
 
     return {
         "role": user_role,
@@ -603,9 +770,12 @@ def list_departments(current_user: Dict[str, Any] = Depends(get_current_user)) -
 @app.post("/api/admin/departments", status_code=status.HTTP_201_CREATED)
 def create_department(payload: DepartmentCreate, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
     supabase = get_supabase()
-    response = supabase.table("departments").insert(payload.model_dump()).execute()
+    try:
+        response = supabase.table("departments").insert(payload.model_dump()).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Department creation failed: {exc}") from exc
     if not response.data:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Department creation failed")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Department creation failed")
     return response.data[0]
 
 
@@ -616,7 +786,10 @@ def update_department(department_id: str, payload: Dict[str, Any], current_user:
     if not data:
         return {"id": department_id, "updated": False}
 
-    response = supabase.table("departments").update(data).eq("id", department_id).execute()
+    try:
+        response = supabase.table("departments").update(data).eq("id", department_id).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Department update failed: {exc}") from exc
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Department not found")
     return response.data[0]
@@ -625,7 +798,10 @@ def update_department(department_id: str, payload: Dict[str, Any], current_user:
 @app.delete("/api/admin/departments/{department_id}")
 def delete_department(department_id: str, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, str]:
     supabase = get_supabase()
-    response = supabase.table("departments").delete().eq("id", department_id).execute()
+    try:
+        response = supabase.table("departments").delete().eq("id", department_id).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Department deletion failed: {exc}") from exc
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Department not found")
     return {"status": "deleted", "id": department_id}
@@ -646,15 +822,30 @@ def delete_module(module_id: str, current_user: Dict[str, Any] = Depends(require
     return delete_resource(module_id, current_user)
 
 
+@app.get("/api/resources")
 @app.get("/api/admin/resources")
 def list_resources(current_user: Dict[str, Any] = Depends(get_current_user)) -> List[Dict[str, Any]]:
     supabase = get_supabase()
-    response = supabase.table("resources").select("*").execute()
+    user_role = str(current_user.get("role") or "User")
+    return fetch_visible_resources(supabase, user_role)
+
+
+@app.get("/api/notifications", response_model=List[NotificationResponse])
+def get_notifications(current_user: Dict[str, Any] = Depends(get_current_user)) -> List[NotificationResponse]:
+    supabase = get_supabase()
+    try:
+        response = supabase.table("notifications").select("*").order("created_at", desc=True).execute()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Notifications are unavailable. Apply the notifications database migration and retry.",
+        ) from exc
+
     user_role = str(current_user.get("role") or "User")
     return [
-        resource
-        for resource in response.data or []
-        if has_access(user_role, resource.get("required_role"))
+        NotificationResponse(**notification)
+        for notification in response.data or []
+        if notification_role_allows(user_role, str(notification.get("target_role_level") or ""))
     ]
 
 
@@ -663,24 +854,42 @@ def create_resource(payload: ResourceCreate, current_user: Dict[str, Any] = Depe
     supabase = get_supabase()
     data = normalize_resource_payload(payload.model_dump(exclude_none=True), apply_defaults=True)
     ensure_unique_module_title(supabase, str(data.get("title") or ""))
-    response = supabase.table("resources").insert(data).execute()
+    try:
+        response = supabase.table("resources").insert(data).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Resource creation failed: {exc}") from exc
     if not response.data:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Resource creation failed")
-    return response.data[0]
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Resource creation failed")
+    created_resource = response.data[0]
+
+    try:
+        notification = NotificationCreate(
+            message=f"New resource: {created_resource.get('title') or data['title']}",
+            target_role_level=normalize_required_role(str(created_resource.get("viewing_level") or data["viewing_level"])),
+        )
+        supabase.table("notifications").insert(notification.model_dump()).execute()
+    except Exception:
+        logger.exception("Resource was created, but its notification could not be stored")
+
+    return created_resource
 
 
 @app.put("/api/admin/resources/{resource_id}")
 def update_resource(resource_id: str, payload: ResourceUpdate, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
     supabase = get_supabase()
+    normalized_resource_id = ensure_valid_backend_id(resource_id, "Resource ID")
     data = normalize_resource_payload(payload.model_dump(exclude_none=True))
 
     if "title" in data:
-        ensure_unique_module_title(supabase, str(data["title"]), excluded_id=resource_id)
+        ensure_unique_module_title(supabase, str(data["title"]), excluded_id=normalized_resource_id)
 
     if not data:
-        return {"id": resource_id, "updated": False}
+        return {"id": normalized_resource_id, "updated": False}
 
-    response = supabase.table("resources").update(data).eq("id", resource_id).execute()
+    try:
+        response = supabase.table("resources").update(data).eq("id", normalized_resource_id).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Resource update failed: {exc}") from exc
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
     return response.data[0]
@@ -689,10 +898,14 @@ def update_resource(resource_id: str, payload: ResourceUpdate, current_user: Dic
 @app.delete("/api/admin/resources/{resource_id}")
 def delete_resource(resource_id: str, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, str]:
     supabase = get_supabase()
-    response = supabase.table("resources").delete().eq("id", resource_id).execute()
+    normalized_resource_id = ensure_valid_backend_id(resource_id, "Resource ID")
+    try:
+        response = supabase.table("resources").delete().eq("id", normalized_resource_id).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Resource deletion failed: {exc}") from exc
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
-    return {"status": "deleted", "id": resource_id}
+    return {"status": "deleted", "id": normalized_resource_id}
 
 
 @app.get("/api/admin/items")
@@ -715,11 +928,21 @@ def delete_item(item_id: str, current_user: Dict[str, Any] = Depends(require_adm
     return delete_resource(item_id, current_user)
 
 
-@app.get("/api/admin/users")
-def list_users(current_user: Dict[str, Any] = Depends(require_admin)) -> List[Dict[str, Any]]:
+@app.get("/api/users")
+def list_users(current_user: Dict[str, Any] = Depends(require_admin_or_manager)) -> List[Dict[str, Any]]:
     supabase = get_supabase()
-    response = supabase.table("users").select("*").order("employee_id").execute()
+    response = (
+        supabase.table("users")
+        .select("employee_id,name,role,department,active,email,phone")
+        .order("employee_id")
+        .execute()
+    )
     return response.data
+
+
+@app.get("/api/admin/users")
+def list_admin_users(current_user: Dict[str, Any] = Depends(require_admin)) -> List[Dict[str, Any]]:
+    return list_users(current_user)
 
 
 @app.post("/api/admin/users", status_code=status.HTTP_201_CREATED)
@@ -737,10 +960,15 @@ def create_user(payload: UserCreate, current_user: Dict[str, Any] = Depends(requ
         "active": payload.active,
         "email": payload.email,
         "phone": payload.phone,
+        "favorite_departments": [],
+        "workspace_layout": [],
     }
-    response = insert_user_record(supabase, user_record)
+    try:
+        response = insert_user_record(supabase, user_record)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"User creation failed: {exc}") from exc
     if not response.data:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="User creation failed")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="User creation failed")
     return response.data[0]
 
 
@@ -759,7 +987,10 @@ def update_user(employee_id: str, payload: UserUpdate, current_user: Dict[str, A
     if not data:
         return {"employee_id": employee_id, "updated": False}
 
-    response = update_user_record(supabase, employee_id, data)
+    try:
+        response = update_user_record(supabase, employee_id, data)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"User update failed: {exc}") from exc
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     return response.data[0]
@@ -768,7 +999,10 @@ def update_user(employee_id: str, payload: UserUpdate, current_user: Dict[str, A
 @app.delete("/api/admin/users/{employee_id}")
 def delete_user(employee_id: str, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, str]:
     supabase = get_supabase()
-    response = supabase.table("users").delete().eq("employee_id", employee_id).execute()
+    try:
+        response = supabase.table("users").delete().eq("employee_id", employee_id).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"User deletion failed: {exc}") from exc
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     return {"status": "deleted", "employee_id": employee_id}

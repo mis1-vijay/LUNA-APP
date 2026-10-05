@@ -43,6 +43,6 @@ Write-Host "Starting backend on port 8000"
 Start-Process PowerShell -ArgumentList '-NoExit','-Command',"cd 'D:\LUNA-APP\LUNA-API'; `$env:EXPO_PUBLIC_API_BASE_URL = '$ApiBaseUrl'; py -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
 
 Write-Host "Starting Expo on port 19006"
-Start-Process PowerShell -ArgumentList '-NoExit','-Command',"cd 'D:\LUNA-APP\LUNA-HOME'; `$env:EXPO_PUBLIC_API_BASE_URL = '$ApiBaseUrl'; npx expo start --clear --port 19006"
+Start-Process PowerShell -ArgumentList '-NoExit','-Command',"cd 'D:\LUNA-APP\LUNA-HOME'; `$env:EXPO_PUBLIC_API_BASE_URL = '$ApiBaseUrl'; npx expo start --clear --lan --port 19006"
 
 Write-Host "Luna app startup launched."

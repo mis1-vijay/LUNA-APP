@@ -6,6 +6,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from supabase import Client, create_client
 
+load_dotenv()
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 supabase: Client | None = None

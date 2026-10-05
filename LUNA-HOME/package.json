@@ -25,10 +25,10 @@
     "typescript": "~6.0.3"
   },
   "scripts": {
-    "start": "expo start --clear --port 19006",
-    "android": "expo start --android --port 19006",
-    "ios": "expo start --ios --port 19006",
-    "web": "expo start --web --port 19006"
+    "start": "expo start --clear --lan --port 19006",
+    "android": "expo start --android --lan --port 19006",
+    "ios": "expo start --ios --lan --port 19006",
+    "web": "expo start --web --lan --port 19006"
   },
   "private": true
 }

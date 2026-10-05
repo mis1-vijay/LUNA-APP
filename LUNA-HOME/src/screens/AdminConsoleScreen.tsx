@@ -38,13 +38,14 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
   const [userError, setUserError] = useState<string | null>(null);
   const [userName, setUserName] = useState('');
   const [employeeId, setEmployeeId] = useState('');
-  const [userDepartment, setUserDepartment] = useState('Packing');
+  const [userDepartment, setUserDepartment] = useState('Department');
   const [userRole, setUserRole] = useState<'Admin' | 'Manager' | 'Supervisor' | 'User'>('User');
   const [userPassword, setUserPassword] = useState('');
   const [userEmail, setUserEmail] = useState('');
   const [userPhone, setUserPhone] = useState('');
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
 
+  const canViewAccessMatrix = role === 'Admin' || role === 'Manager';
   const canManage = useMemo(() => role === 'Admin', [role]);
   const userSummary = useMemo(
     () => ({
@@ -57,7 +58,7 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
   );
 
   const loadUsers = async () => {
-    if (!canManage) {
+    if (!canViewAccessMatrix) {
       return;
     }
 
@@ -74,14 +75,14 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
   };
 
   useEffect(() => {
-    if (!canManage) {
+    if (!canViewAccessMatrix) {
       setUserLoading(false);
       setUserError(null);
       return;
     }
 
     void loadUsers();
-  }, [canManage, refreshAdminUsers]);
+  }, [canViewAccessMatrix]);
 
   const handleAddModule = async () => {
     if (!moduleName.trim()) {
@@ -95,7 +96,7 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
     }
 
     const newModule: CustomModule = {
-      id: editingModuleId ?? `${moduleType}-${Date.now()}`,
+      id: editingModuleId ?? '',
       type: moduleType,
       title: moduleName.trim(),
       subtitle: moduleSubtitle.trim() || 'Custom portal item',
@@ -110,7 +111,11 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
     try {
       const resourceType = moduleType === 'webapp' ? 'webapp' : moduleType === 'form' ? 'form' : moduleType === 'report' ? 'report' : moduleType === 'module' ? 'module' : moduleType === 'department' ? 'department' : 'tiny';
 
-      if (editingModuleId) {
+      const editingPersistedModule = Boolean(
+        editingModuleId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(editingModuleId),
+      );
+
+      if (editingPersistedModule && editingModuleId) {
         await updateModule(editingModuleId, {
           title: newModule.title,
           description: newModule.subtitle,
@@ -135,9 +140,15 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
           icon: newModule.accent,
           required_role: 'User',
         });
-        const createdId = typeof created?.id === 'string' ? created.id : newModule.id;
+        const createdId = created?.id == null ? '' : String(created.id).trim();
+        if (!createdId) {
+          throw new Error('The server did not return the new resource ID. Refresh the module list before continuing.');
+        }
+        if (editingModuleId) {
+          await removeCustomModule(editingModuleId);
+        }
         addCustomModule({ ...newModule, id: createdId });
-        Alert.alert('Module added', `${newModule.title} is now available in the portal.`);
+        Alert.alert(editingModuleId ? 'Module updated' : 'Module added', `${newModule.title} is now available in the portal.`);
       }
 
       setEditingModuleId(null);
@@ -187,6 +198,12 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
           setDeletingModuleId(module.id);
 
           try {
+            const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(module.id);
+            if (!isUuid) {
+              await removeCustomModule(module.id);
+              return;
+            }
+
             await deleteModule(module.id);
             removeCustomModule(module.id);
             Alert.alert('Module deleted', `${module.title} was removed.`);
@@ -236,13 +253,12 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
       return;
     }
 
-    const generatedEmail = userEmail.trim() || `${employeeId.trim().toUpperCase()}@LUNA.CO.IN`;
     const payload: Partial<AdminManagedUser> = {
       employeeId: employeeId.trim(),
       name: userName.trim(),
       department: userDepartment.trim() || 'Operations',
       role: userRole,
-      email: generatedEmail,
+      email: userEmail.trim(),
       phone: userPhone.trim() || 'Not set',
     };
     if (initialPassword) {
@@ -263,7 +279,7 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
         department: payload.department ?? (userDepartment.trim() || 'Operations'),
         role: payload.role ?? userRole,
         active: true,
-        email: payload.email ?? `${employeeId.trim().toUpperCase()}@LUNA.CO.IN`,
+        email: payload.email ?? '',
         phone: payload.phone ?? (userPhone.trim() || 'Not set'),
         password: initialPassword,
       };
@@ -275,7 +291,7 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
     setEditingUserId(null);
     setUserName('');
     setEmployeeId('');
-    setUserDepartment('Packing');
+    setUserDepartment('Department');
     setUserRole('User');
     setUserPassword('');
     setUserEmail('');
@@ -286,7 +302,7 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
     setEditingUserId(null);
     setUserName('');
     setEmployeeId('');
-    setUserDepartment('Packing');
+    setUserDepartment('Department');
     setUserRole('User');
     setUserPassword('');
     setUserEmail('');
@@ -294,13 +310,13 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
     setActiveTab('users');
   };
 
-  if (!canManage) {
+  if (!canViewAccessMatrix) {
     return (
       <SafeAreaView style={styles.safeArea}>
         <Header />
         <View style={styles.restrictedContainer}>
           <Text style={styles.title}>Access Restricted</Text>
-          <Text style={styles.helperText}>Only admins can manage modules and users.</Text>
+          <Text style={styles.helperText}>This screen is available to Admins and Managers.</Text>
           <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()} activeOpacity={0.8}>
             <Text style={styles.backButtonText}>Back to portal</Text>
           </TouchableOpacity>
@@ -354,7 +370,9 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
 
         {activeTab === 'modules' ? (
           <View style={styles.card}>
-            <Text style={styles.sectionTitle}>Add module</Text>
+            {canManage ? (
+              <>
+                <Text style={styles.sectionTitle}>Add module</Text>
             <TextInput
               value={moduleName}
               onChangeText={setModuleName}
@@ -405,13 +423,15 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
             <TouchableOpacity style={styles.primaryButton} onPress={() => { void handleAddModule(); }} activeOpacity={0.9} disabled={savingModule}>
               {savingModule ? <ActivityIndicator color="#ffffff" size="small" /> : <Text style={styles.primaryButtonText}>{editingModuleId ? 'Update module' : 'Add module'}</Text>}
             </TouchableOpacity>
+              </>
+            ) : null}
 
             <View style={styles.card}>
               <Text style={styles.sectionTitle}>Existing modules</Text>
               {customModules.length === 0 ? (
                 <EmptyState title="No custom modules" message="Create your first portal module to get started." />
               ) : (
-                customModules.map((module) => (
+                customModules.filter((module) => module.title.trim().toLowerCase() !== 'user access matrix').map((module) => (
                   <View key={module.id} style={styles.moduleRow}>
                     <View style={styles.moduleMeta}>
                       <View style={[styles.colorDot, { backgroundColor: module.accent }]} />
@@ -420,14 +440,16 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
                         <Text style={styles.moduleSubtitle}>{module.type}</Text>
                       </View>
                     </View>
-                    <View style={styles.quickActions}>
-                      <TouchableOpacity onPress={() => beginModuleEdit(module)} style={[styles.iconButton, styles.editButton]} activeOpacity={0.8}>
-                        <Text style={styles.iconButtonText}>Edit</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity onPress={() => handleDeleteModule(module)} style={[styles.iconButton, styles.deleteButton]} activeOpacity={0.8} disabled={deletingModuleId === module.id}>
-                        {deletingModuleId === module.id ? <ActivityIndicator color="#ffffff" size="small" /> : <Text style={styles.iconButtonText}>Delete</Text>}
-                      </TouchableOpacity>
-                    </View>
+                    {canManage ? (
+                      <View style={styles.quickActions}>
+                        <TouchableOpacity onPress={() => beginModuleEdit(module)} style={[styles.iconButton, styles.editButton]} activeOpacity={0.8}>
+                          <Text style={styles.iconButtonText}>Edit</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity onPress={() => handleDeleteModule(module)} style={[styles.iconButton, styles.deleteButton]} activeOpacity={0.8} disabled={deletingModuleId === module.id}>
+                          {deletingModuleId === module.id ? <ActivityIndicator color="#ffffff" size="small" /> : <Text style={styles.iconButtonText}>Delete</Text>}
+                        </TouchableOpacity>
+                      </View>
+                    ) : null}
                   </View>
                 ))
               )}
@@ -435,6 +457,7 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
           </View>
         ) : (
           <>
+            {canManage ? (
             <View style={styles.card}>
               <View style={styles.inlineHeader}>
                 <Text style={styles.sectionTitle}>{editingUserId ? 'Update user' : 'Add user'}</Text>
@@ -508,13 +531,16 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
                 <Text style={styles.primaryButtonText}>{editingUserId ? 'Update user' : 'Create user'}</Text>
               </TouchableOpacity>
             </View>
+            ) : null}
 
             <View style={styles.card}>
               <View style={styles.inlineHeader}>
                 <Text style={styles.sectionTitle}>User roster</Text>
-                <TouchableOpacity onPress={() => handleAddUser()} activeOpacity={0.8}>
-                  <Text style={styles.linkText}>+ Add</Text>
-                </TouchableOpacity>
+                {canManage ? (
+                  <TouchableOpacity onPress={() => handleAddUser()} activeOpacity={0.8}>
+                    <Text style={styles.linkText}>+ Add</Text>
+                  </TouchableOpacity>
+                ) : null}
               </View>
 
               {userLoading ? (
@@ -530,11 +556,11 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
                   </TouchableOpacity>
                 </View>
               ) : adminUsers.length === 0 ? (
-                <EmptyState title="No users found" message="Add the first employee to build the roster." />
+                <EmptyState title="No users found" message={canManage ? 'Add the first employee to build the roster.' : 'No user records are available.'} />
               ) : (
                 adminUsers.map((person) => (
                   <View key={person.id} style={styles.userCard}>
-                    <TouchableOpacity onPress={() => fillUserEditor(person)} activeOpacity={0.9} style={styles.userMain}>
+                    <TouchableOpacity onPress={canManage ? () => fillUserEditor(person) : undefined} disabled={!canManage} activeOpacity={0.9} style={styles.userMain}>
                       <View style={styles.avatarCircle}>
                         <Text style={styles.avatarText}>{person.name.charAt(0).toUpperCase()}</Text>
                       </View>
@@ -545,24 +571,26 @@ export default function AdminConsoleScreen({ navigation }: AdminConsoleScreenPro
                       </View>
                     </TouchableOpacity>
 
-                    <View style={styles.userActions}>
-                      <TouchableOpacity
-                        onPress={() => updateAdminUser(person.id, { active: !person.active })}
-                        style={[styles.statusPill, person.active ? styles.statusActive : styles.statusInactive]}
-                        activeOpacity={0.8}
-                      >
-                        <Text style={styles.statusText}>{person.active ? 'Active' : 'Inactive'}</Text>
-                      </TouchableOpacity>
+                    {canManage ? (
+                      <View style={styles.userActions}>
+                        <TouchableOpacity
+                          onPress={() => updateAdminUser(person.id, { active: !person.active })}
+                          style={[styles.statusPill, person.active ? styles.statusActive : styles.statusInactive]}
+                          activeOpacity={0.8}
+                        >
+                          <Text style={styles.statusText}>{person.active ? 'Active' : 'Inactive'}</Text>
+                        </TouchableOpacity>
 
-                      <View style={styles.quickActions}>
-                        <TouchableOpacity onPress={() => fillUserEditor(person)} style={[styles.iconButton, styles.editButton]} activeOpacity={0.8}>
-                          <Text style={styles.iconButtonText}>Edit</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity onPress={() => handleDeleteUser(person)} style={[styles.iconButton, styles.deleteButton]} activeOpacity={0.8}>
-                          <Text style={styles.iconButtonText}>Delete</Text>
-                        </TouchableOpacity>
+                        <View style={styles.quickActions}>
+                          <TouchableOpacity onPress={() => fillUserEditor(person)} style={[styles.iconButton, styles.editButton]} activeOpacity={0.8}>
+                            <Text style={styles.iconButtonText}>Edit</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity onPress={() => handleDeleteUser(person)} style={[styles.iconButton, styles.deleteButton]} activeOpacity={0.8}>
+                            <Text style={styles.iconButtonText}>Delete</Text>
+                          </TouchableOpacity>
+                        </View>
                       </View>
-                    </View>
+                    ) : <Text style={styles.statusText}>{person.active ? 'Active' : 'Inactive'}</Text>}
                   </View>
                 ))
               )}

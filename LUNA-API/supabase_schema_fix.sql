@@ -3,8 +3,9 @@
 ALTER TABLE public.users
 ADD COLUMN IF NOT EXISTS department text,
     ADD COLUMN IF NOT EXISTS email text,
-    ADD COLUMN IF NOT EXISTS phone text;
-
+    ADD COLUMN IF NOT EXISTS phone text,
+    ADD COLUMN IF NOT EXISTS favorite_departments jsonb NOT NULL DEFAULT '[]'::jsonb,
+    ADD COLUMN IF NOT EXISTS workspace_layout jsonb NOT NULL DEFAULT '[]'::jsonb;
 CREATE TABLE IF NOT EXISTS public.password_reset_tokens (
     employee_id text PRIMARY KEY,
     token_hash text NOT NULL,
@@ -13,7 +14,17 @@ CREATE TABLE IF NOT EXISTS public.password_reset_tokens (
     attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0)
 );
 ALTER TABLE public.password_reset_tokens ENABLE ROW LEVEL SECURITY;
-
+CREATE TABLE IF NOT EXISTS public.notifications (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    message text NOT NULL CHECK (length(trim(message)) > 0),
+    target_role_level text NOT NULL CHECK (
+        target_role_level IN ('User', 'Supervisor', 'Manager', 'Admin')
+    ),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    is_read boolean NOT NULL DEFAULT false
+);
+CREATE INDEX IF NOT EXISTS notifications_created_at_idx ON public.notifications (created_at DESC);
+ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
 INSERT INTO public.departments (name, icon, sort_order)
 SELECT 'Packing',
     'package',

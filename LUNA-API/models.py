@@ -1,10 +1,13 @@
 # models.py
 from __future__ import annotations
 
-from typing import Optional
+from datetime import datetime
+from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
+
+RoleLevel = Literal["User", "Supervisor", "Manager", "Admin"]
 
 
 class UserLogin(BaseModel):
@@ -39,41 +42,75 @@ class Token(BaseModel):
     department: Optional[str] = None
 
 
+class ProfileUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    department: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    email: Optional[str] = Field(default=None, max_length=160)
+    phone: Optional[str] = Field(default=None, max_length=40)
+
+    @field_validator("email")
+    @classmethod
+    def require_luna_email(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        normalized = value.strip()
+        return normalized or None
+
+
+class WorkspaceSettingsUpdate(BaseModel):
+    favorites: Optional[List[str]] = None
+    workspace_layout: Optional[List[Dict[str, Any]]] = None
+
+
 class ResourceResponse(BaseModel):
     id: UUID
     title: str
     description: Optional[str] = None
     type: Optional[str] = None
-    category: Optional[str] = None
     url: Optional[str] = None
-    link: Optional[str] = None
     icon: Optional[str] = None
     department_id: Optional[UUID] = None
-    required_role: Optional[str] = None
+    viewing_level: Optional[str] = None
 
 
 class ResourceCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=120)
     description: Optional[str] = None
     type: Optional[str] = Field(default="webapp", min_length=1, max_length=50)
-    category: Optional[str] = Field(default=None, min_length=1, max_length=50)
     url: Optional[str] = None
-    link: Optional[str] = None
     icon: Optional[str] = None
     department_id: Optional[UUID] = None
-    required_role: Optional[str] = None
+    viewing_level: Optional[RoleLevel] = Field(
+        default=None,
+        validation_alias=AliasChoices("viewing_level", "required_role"),
+    )
 
 
 class ResourceUpdate(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1, max_length=120)
     description: Optional[str] = None
     type: Optional[str] = Field(default=None, min_length=1, max_length=50)
-    category: Optional[str] = Field(default=None, min_length=1, max_length=50)
     url: Optional[str] = None
-    link: Optional[str] = None
     icon: Optional[str] = None
     department_id: Optional[UUID] = None
-    required_role: Optional[str] = None
+    viewing_level: Optional[RoleLevel] = Field(
+        default=None,
+        validation_alias=AliasChoices("viewing_level", "required_role"),
+    )
+
+
+class NotificationCreate(BaseModel):
+    message: str = Field(..., min_length=1, max_length=300)
+    target_role_level: RoleLevel
+    is_read: bool = False
+
+
+class NotificationResponse(BaseModel):
+    id: UUID
+    message: str
+    target_role_level: RoleLevel
+    created_at: datetime
+    is_read: bool = False
 
 
 class DepartmentResponse(BaseModel):
@@ -96,7 +133,7 @@ class UserCreate(BaseModel):
     role: str = Field(default="User", min_length=1, max_length=30)
     department: Optional[str] = None
     active: bool = True
-    email: Optional[str] = Field(default=None, min_length=3, max_length=160)
+    email: Optional[str] = Field(default=None, max_length=160)
     phone: Optional[str] = Field(default=None, min_length=3, max_length=40)
 
     @field_validator("email")
@@ -105,9 +142,7 @@ class UserCreate(BaseModel):
         if value is None:
             return value
         normalized = value.strip()
-        if "@" not in normalized or normalized.rsplit("@", 1)[1].lower() != "luna.co.in":
-            raise ValueError("Employee email must use the @luna.co.in domain")
-        return f"{normalized.rsplit('@', 1)[0]}@luna.co.in"
+        return normalized or None
 
 
 class UserUpdate(BaseModel):
@@ -116,7 +151,7 @@ class UserUpdate(BaseModel):
     role: Optional[str] = Field(default=None, min_length=1, max_length=30)
     department: Optional[str] = None
     active: Optional[bool] = None
-    email: Optional[str] = Field(default=None, min_length=3, max_length=160)
+    email: Optional[str] = Field(default=None, max_length=160)
     phone: Optional[str] = Field(default=None, min_length=3, max_length=40)
 
     @field_validator("email")
@@ -125,6 +160,4 @@ class UserUpdate(BaseModel):
         if value is None:
             return value
         normalized = value.strip()
-        if "@" not in normalized or normalized.rsplit("@", 1)[1].lower() != "luna.co.in":
-            raise ValueError("Employee email must use the @luna.co.in domain")
-        return f"{normalized.rsplit('@', 1)[0]}@luna.co.in"
+        return normalized or None

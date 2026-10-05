@@ -46,7 +46,7 @@ export const favorites = [
 ];
 
 export const getVisibleAdminResources = (role: PortalRole) =>
-  role === 'Admin' || role === 'Manager' ? adminResources : [];
+  role === 'Admin' ? adminResources : [];
 
 export const getDepartmentByName = (name: string) =>
   departments.find((department) => department.name === name) ?? departments[0];
