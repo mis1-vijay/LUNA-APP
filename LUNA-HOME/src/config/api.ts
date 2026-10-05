@@ -1,19 +1,23 @@
+const LIVE_API_BASE_URL = 'https://luna-app-ne5e.onrender.com';
+
+function normalizeApiBaseUrl(value?: string): string {
+  const trimmed = value?.trim() ?? '';
+
+  if (!trimmed) {
+    return '';
+  }
+
+  return trimmed.replace(/\/+$/, '');
+}
+
 export function getApiBaseUrl(): string {
-  const override = process.env.EXPO_PUBLIC_API_BASE_URL?.trim() ?? '';
+  const override = normalizeApiBaseUrl(process.env.EXPO_PUBLIC_API_BASE_URL);
 
-  if (!override) {
-    return '';
+  if (override) {
+    return override;
   }
 
-  const normalized = override.replace(/\/+$/, '');
-  const lower = normalized.toLowerCase();
-
-  if (lower.includes('localhost') || lower.includes('127.0.0.1') || lower.includes('0.0.0.0')) {
-    console.warn('Ignoring loopback API URL. Set EXPO_PUBLIC_API_BASE_URL to your LAN IP, e.g. http://192.168.0.189:8000');
-    return '';
-  }
-
-  return normalized;
+  return LIVE_API_BASE_URL;
 }
 
 export const API_BASE_URL = getApiBaseUrl();
