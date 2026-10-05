@@ -164,12 +164,21 @@ def visible_resource_levels(user_role: str) -> Optional[List[str]]:
 
 
 def fetch_visible_resources(supabase: Any, user_role: str) -> List[Dict[str, Any]]:
-    query = supabase.table("resources").select("*")
+    response = supabase.table("resources").select("*").execute()
+    resources = response.data or []
     allowed_levels = visible_resource_levels(user_role)
-    if allowed_levels is not None:
-        query = query.in_("viewing_level", allowed_levels)
-    response = query.execute()
-    return response.data or []
+    if allowed_levels is None:
+        return resources
+
+    allowed_level_set = set(allowed_levels)
+    return [
+        resource
+        for resource in resources
+        if isinstance(resource, dict)
+        and normalize_required_role(
+            resource.get("viewing_level") if isinstance(resource.get("viewing_level"), str) else None
+        ) in allowed_level_set
+    ]
 
 
 def notification_role_allows(user_role: str, target_role_level: str) -> bool:
@@ -211,6 +220,12 @@ def deserialize_jsonb_value(value: Any) -> Any:
 
 
 def build_user_profile_record(user: Dict[str, Any]) -> Dict[str, Any]:
+    favorites_value = deserialize_jsonb_value(user.get("favorite_departments"))
+    favorites = (
+        [value.strip() for value in favorites_value if isinstance(value, str) and value.strip()]
+        if isinstance(favorites_value, list)
+        else []
+    )
     return {
         "employee_id": str(user.get("employee_id") or ""),
         "name": str(user.get("name") or "Employee"),
@@ -218,7 +233,7 @@ def build_user_profile_record(user: Dict[str, Any]) -> Dict[str, Any]:
         "department": str(user.get("department") or "Operations"),
         "email": user.get("email") or "",
         "phone": user.get("phone") or "",
-        "favorites": deserialize_jsonb_value(user.get("favorite_departments")) or [],
+        "favorites": favorites,
         "workspace_layout": deserialize_jsonb_value(user.get("workspace_layout")) or [],
     }
 
@@ -616,7 +631,12 @@ def save_user_workspace(
     employee_id = str(current_user.get("employee_id") or "")
     data = payload.model_dump(exclude_unset=True)
     if "favorites" in data:
-        favorites = [value.strip() for value in data.pop("favorites") if value.strip()]
+        favorites_value = data.pop("favorites")
+        favorites = (
+            [value.strip() for value in favorites_value if isinstance(value, str) and value.strip()]
+            if isinstance(favorites_value, list)
+            else []
+        )
         data["favorite_departments"] = serialize_jsonb_value(favorites)
 
     if "workspace_layout" in data:
@@ -748,7 +768,7 @@ def get_dashboard(current_user: Dict[str, Any] = Depends(get_current_user)) -> D
     resources = fetch_visible_resources(supabase, user_role)
 
     departments: List[DepartmentResponse] = [
-        DepartmentResponse(**department) for department in departments_response.data
+        DepartmentResponse(**department) for department in departments_response.data or []
     ]
 
     accessible_resources = [ResourceResponse(**resource) for resource in resources]

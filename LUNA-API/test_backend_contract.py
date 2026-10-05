@@ -71,19 +71,26 @@ class BackendContractTests(unittest.TestCase):
     def test_resource_query_filters_database_by_viewing_level(self):
         supabase = MagicMock()
         query = supabase.table.return_value.select.return_value
-        query.in_.return_value = query
-        query.execute.return_value.data = []
+        query.execute.return_value.data = [
+            {"title": "User item", "viewing_level": "User"},
+            {"title": "Supervisor item", "viewing_level": "Supervisor"},
+            {"title": "Manager item", "viewing_level": "Manager"},
+            {"title": "Admin item", "viewing_level": "Admin"},
+            {"title": "Unassigned item", "viewing_level": None},
+        ]
 
-        fetch_visible_resources(supabase, "Supervisor")
+        visible = fetch_visible_resources(supabase, "Supervisor")
 
-        query.in_.assert_called_once_with("viewing_level", ["User", "Supervisor"])
+        self.assertEqual([resource["title"] for resource in visible], ["User item", "Supervisor item", "Unassigned item"])
+        query.in_.assert_not_called()
 
         admin_supabase = MagicMock()
         admin_query = admin_supabase.table.return_value.select.return_value
-        admin_query.execute.return_value.data = []
+        admin_query.execute.return_value.data = query.execute.return_value.data
 
-        fetch_visible_resources(admin_supabase, "Admin")
+        admin_visible = fetch_visible_resources(admin_supabase, "Admin")
 
+        self.assertEqual(len(admin_visible), 5)
         admin_query.in_.assert_not_called()
 
     def test_notification_role_filter_is_strictly_hierarchical(self):
