@@ -16,6 +16,7 @@ import Header from '../components/Header';
 import EmptyState from '../components/EmptyState';
 import ErrorState from '../components/ErrorState';
 import { useAppContext, type CustomModule } from '../context/AppContext';
+import { fetchDepartmentResources, type DashboardDepartmentResource } from '../services/portalApi';
 import { RootStackParamList } from '../types';
 
 type DepartmentWorkspaceScreenProps = NativeStackScreenProps<RootStackParamList, 'DepartmentWorkspace'>;
@@ -29,30 +30,59 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [apiDepartmentResources, setApiDepartmentResources] = useState<DashboardDepartmentResource[]>([]);
   const [newTitle, setNewTitle] = useState('');
   const [newSubtitle, setNewSubtitle] = useState('');
   const [newLink, setNewLink] = useState('');
   const [newType, setNewType] = useState<'webApp' | 'report' | 'resource'>('resource');
 
   useEffect(() => {
+    let isCurrent = true;
+    setIsLoading(true);
     setLoadError(null);
-    const timeout = setTimeout(() => setIsLoading(false), 150);
-    return () => clearTimeout(timeout);
-  }, [department, customModules.length]);
+    fetchDepartmentResources(department)
+      .then((resources) => {
+        if (isCurrent) {
+          setApiDepartmentResources(resources);
+        }
+      })
+      .catch((error: unknown) => {
+        if (isCurrent) {
+          setLoadError(error instanceof Error ? error.message : 'Unable to load department resources.');
+        }
+      })
+      .finally(() => {
+        if (isCurrent) {
+          setIsLoading(false);
+        }
+      });
+    return () => {
+      isCurrent = false;
+    };
+  }, [department, reloadKey]);
 
   const departmentModules = useMemo(
     () =>
-      customModules.filter(
+      [
+        ...customModules.filter(
+          (module) =>
+            module.title.trim().toLowerCase() !== 'user access matrix' &&
+            (module.department === department ||
+              (module.type !== 'department' &&
+                (module.title.toLowerCase().includes(department.toLowerCase()) ||
+                  module.department?.toLowerCase().includes(department.toLowerCase())))),
+        ),
+        ...apiDepartmentResources.map((resource): CustomModule => ({
+          ...resource,
+          type: resource.type,
+        })),
+      ].filter(
         (module) =>
-          module.title.trim().toLowerCase() !== 'user access matrix' &&
-          (module.department === department ||
-            (module.type !== 'department' &&
-              (module.title.toLowerCase().includes(department.toLowerCase()) ||
-                module.department?.toLowerCase().includes(department.toLowerCase())))) &&
-          (role === 'Admin' ||
-            module.access.some((requiredRole) => ROLE_RANK[role] >= (ROLE_RANK[requiredRole] ?? Infinity))),
+          role === 'Admin' ||
+          module.access.some((requiredRole) => ROLE_RANK[role] >= (ROLE_RANK[requiredRole] ?? Infinity)),
       ),
-    [customModules, department, role],
+    [apiDepartmentResources, customModules, department, role],
   );
 
   const handleAddResource = async () => {
@@ -107,7 +137,7 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
         <Header />
         <View style={styles.centeredState}>
           <ErrorState title="Unable to load department" message={loadError} />
-          <TouchableOpacity style={styles.retryButton} onPress={() => setIsLoading(true)} activeOpacity={0.9}>
+          <TouchableOpacity style={styles.retryButton} onPress={() => setReloadKey((current) => current + 1)} activeOpacity={0.9}>
             <Text style={styles.retryButtonText}>Retry</Text>
           </TouchableOpacity>
         </View>

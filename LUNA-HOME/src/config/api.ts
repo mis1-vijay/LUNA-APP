@@ -1,5 +1,7 @@
 const LIVE_API_BASE_URL = 'https://luna-app-ne5e.onrender.com';
 
+export const API_REQUEST_TIMEOUT_MS = 60000;
+
 function normalizeApiBaseUrl(value?: string): string {
   const trimmed = value?.trim() ?? '';
 

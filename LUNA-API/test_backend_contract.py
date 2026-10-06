@@ -93,6 +93,54 @@ class BackendContractTests(unittest.TestCase):
         self.assertEqual(len(admin_visible), 5)
         admin_query.in_.assert_not_called()
 
+    def test_user_level_resources_are_visible_to_all_roles_case_insensitively(self):
+        department_id = "6b59904d-9918-4f7e-8d1c-609936912d14"
+        resources = [
+            {"title": "Lowercase viewing level", "viewing_level": "user", "department_id": department_id},
+            {"title": "Uppercase access level", "access_level": "USER", "department_id": department_id},
+            {"title": "Mixed-case required role", "required_role": "UsEr", "department_id": department_id},
+            {"title": "Supervisor resource", "viewing_level": "SUPERVISOR"},
+            {"title": "Manager resource", "viewing_level": "Manager"},
+            {"title": "Admin resource", "viewing_level": "admin"},
+        ]
+
+        expected_titles = {
+            "User": {
+                "Lowercase viewing level",
+                "Uppercase access level",
+                "Mixed-case required role",
+            },
+            "Supervisor": {
+                "Lowercase viewing level",
+                "Uppercase access level",
+                "Mixed-case required role",
+                "Supervisor resource",
+            },
+            "Manager": {
+                "Lowercase viewing level",
+                "Uppercase access level",
+                "Mixed-case required role",
+                "Supervisor resource",
+                "Manager resource",
+            },
+            "Admin": {resource["title"] for resource in resources},
+        }
+
+        for role, expected in expected_titles.items():
+            supabase = MagicMock()
+            supabase.table.return_value.select.return_value.execute.return_value.data = resources
+
+            with self.subTest(role=role):
+                visible = fetch_visible_resources(supabase, role)
+                self.assertEqual({resource["title"] for resource in visible}, expected)
+                for resource in visible:
+                    if resource["title"] in {
+                        "Lowercase viewing level",
+                        "Uppercase access level",
+                        "Mixed-case required role",
+                    }:
+                        self.assertEqual(resource["department_id"], department_id)
+
     def test_notification_role_filter_is_strictly_hierarchical(self):
         self.assertTrue(notification_role_allows("Manager", "Manager"))
         self.assertTrue(notification_role_allows("Admin", "Manager"))

@@ -166,18 +166,25 @@ def visible_resource_levels(user_role: str) -> Optional[List[str]]:
 def fetch_visible_resources(supabase: Any, user_role: str) -> List[Dict[str, Any]]:
     response = supabase.table("resources").select("*").execute()
     resources = response.data or []
-    allowed_levels = visible_resource_levels(user_role)
-    if allowed_levels is None:
+    normalized_user_role = normalize_required_role(user_role)
+    if normalized_user_role == "Admin":
         return resources
 
-    allowed_level_set = set(allowed_levels)
     return [
         resource
         for resource in resources
         if isinstance(resource, dict)
-        and normalize_required_role(
-            resource.get("viewing_level") if isinstance(resource.get("viewing_level"), str) else None
-        ) in allowed_level_set
+        and has_access(
+            normalized_user_role,
+            next(
+                (
+                    str(resource[field])
+                    for field in ("viewing_level", "access_level", "required_role", "role")
+                    if isinstance(resource.get(field), str) and resource[field].strip()
+                ),
+                None,
+            ),
+        )
     ]
 
 

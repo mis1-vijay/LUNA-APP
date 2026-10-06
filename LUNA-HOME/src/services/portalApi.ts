@@ -1,4 +1,4 @@
-import { API_BASE_URL } from '../config/api';
+import { API_BASE_URL, API_REQUEST_TIMEOUT_MS } from '../config/api';
 import type { PortalRole } from '../data/portalData';
 import { clearSession, getAccessToken } from './authService';
 
@@ -11,10 +11,12 @@ type DashboardResource = {
   accent?: string;
   category?: string;
   viewing_level?: string;
+  access_level?: string;
   required_role?: string;
   access?: string[];
   role?: string;
   department_id?: number | string | null;
+  department?: string;
   type?: string;
   url?: string;
   link?: string;
@@ -32,6 +34,17 @@ type DashboardDepartment = {
   access?: string[];
   icon?: string;
   sort_order?: number;
+};
+
+export type DashboardDepartmentResource = {
+  id: string;
+  type: 'webApp' | 'report' | 'form' | 'resource';
+  title: string;
+  subtitle: string;
+  accent: string;
+  link: string;
+  access: PortalRole[];
+  department: string;
 };
 
 const departmentAccentMap: Record<string, string> = {
@@ -117,7 +130,7 @@ const buildDepartmentCard = (department: DashboardDepartment): { name: string; t
 
 export async function fetchDashboardData() {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 15000);
+  const timeoutId = setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
 
   try {
     const token = await getAccessToken();
@@ -151,18 +164,47 @@ export async function fetchDashboardData() {
     ]);
     const resources: DashboardResource[] = Array.isArray(resourcePayload) ? resourcePayload : [];
     const departments: DashboardDepartment[] = Array.isArray(departmentPayload) ? departmentPayload : [];
+    const departmentNamesById = new Map(
+      departments
+        .filter((department) => department.id != null && department.name)
+        .map((department) => [String(department.id), department.name as string]),
+    );
 
-  const dashboardResources = resources.map((resource) => ({
-    ...resource,
-    type: (resource.type ?? resource.category ?? 'report').toString().trim().toLowerCase(),
-    required_role: resource.viewing_level ?? resource.required_role ?? resource.role ?? 'User',
-    subtitle: resource.subtitle ?? resource.description ?? 'Portal item',
-    url: resource.url ?? resource.link ?? undefined,
-    link: resource.link ?? resource.url ?? undefined,
-    meta: resource.meta ?? (resource.type === 'form' ? 'Form' : resource.type === 'webapp' ? 'Report' : 'Report'),
-  }));
+    const dashboardResources = resources.map((resource) => ({
+      ...resource,
+      type: (resource.type ?? resource.category ?? 'report').toString().trim().toLowerCase(),
+      required_role: resource.viewing_level ?? resource.access_level ?? resource.required_role ?? resource.role ?? 'User',
+      subtitle: resource.subtitle ?? resource.description ?? 'Portal item',
+      url: resource.url ?? resource.link ?? undefined,
+      link: resource.link ?? resource.url ?? undefined,
+      meta: resource.meta ?? (resource.type === 'form' ? 'Form' : resource.type === 'webapp' ? 'Report' : 'Report'),
+    }));
+
+    const departmentResources: DashboardDepartmentResource[] = dashboardResources.flatMap((resource) => {
+      const department =
+        (typeof resource.department === 'string' && resource.department.trim()) ||
+        (resource.department_id == null ? undefined : departmentNamesById.get(String(resource.department_id)));
+      if (!department) {
+        return [];
+      }
+
+      const type: DashboardDepartmentResource['type'] =
+        resource.type === 'webapp' ? 'webApp' : resource.type === 'form' ? 'form' : resource.type === 'report' || resource.type === 'sheet' ? 'report' : 'resource';
+
+      return [{
+        id: resource.id == null ? `${department}-${resource.title ?? 'resource'}` : String(resource.id),
+        type,
+        title: resource.title ?? 'Portal resource',
+        subtitle: resource.subtitle,
+        accent: resource.accent ?? '#0284c7',
+        link: resource.url ?? '',
+        access: normalizeAccessList(resource.required_role),
+        department,
+      }];
+    });
 
     return {
+      departmentResources,
       webApps: dashboardResources
         .filter(
           (resource) =>
@@ -234,7 +276,7 @@ export async function fetchDashboardData() {
     };
   } catch (error) {
     if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
-      throw new Error(`Dashboard request timed out. Connect your phone to the same Wi-Fi and confirm ${API_BASE_URL}/docs opens, then retry.`);
+      throw new Error(`Dashboard request timed out after ${API_REQUEST_TIMEOUT_MS / 1000} seconds. Connect your phone to the same Wi-Fi and confirm ${API_BASE_URL}/docs opens, then retry.`);
     }
 
     throw new Error(normalizeApiError(error, 'Unable to load dashboard data.'));
@@ -352,6 +394,9 @@ export type AdminUserPayload = {
 };
 
 async function requestBackend<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 'DELETE', body?: Record<string, unknown>) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
+
   try {
     if (!API_BASE_URL) {
       throw new Error('EXPO_PUBLIC_API_BASE_URL is not configured.');
@@ -371,6 +416,7 @@ async function requestBackend<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 
         Authorization: `Bearer ${token}`,
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
+      signal: controller.signal,
     });
 
     const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
@@ -384,6 +430,10 @@ async function requestBackend<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 
 
     return payload as T;
   } catch (error) {
+    if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
+      throw new Error(`API request timed out after ${API_REQUEST_TIMEOUT_MS / 1000} seconds.`);
+    }
+
     const message = normalizeApiError(error, 'Unable to reach the Luna API. Please try again later.');
 
     if (/invalid or expired token|unauthorized|401|403/i.test(message)) {
@@ -392,7 +442,15 @@ async function requestBackend<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 
     }
 
     throw new Error(message || 'Unable to reach the Luna API. Please try again later.');
+  } finally {
+    clearTimeout(timeoutId);
   }
+}
+
+export async function fetchDepartmentResources(departmentName: string): Promise<DashboardDepartmentResource[]> {
+  const dashboard = await fetchDashboardData();
+  const normalizedName = departmentName.trim().toLowerCase();
+  return dashboard.departmentResources.filter((resource) => resource.department.trim().toLowerCase() === normalizedName);
 }
 
 export type PortalNotification = {

@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
-import { API_BASE_URL, AUTH_LOGIN_URL } from '../config/api';
+import { API_BASE_URL, API_REQUEST_TIMEOUT_MS, AUTH_LOGIN_URL } from '../config/api';
 
 export type UserRole = 'Admin' | 'Manager' | 'Supervisor' | 'User';
 
@@ -69,7 +69,7 @@ export async function signIn(employeeId: string, password: string): Promise<Auth
   }
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 15000);
+  const timeoutId = setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
 
   try {
     const response = await fetch(AUTH_LOGIN_URL, {
@@ -150,18 +150,30 @@ async function postPasswordReset(path: string, body: Record<string, string>): Pr
     throw new Error('EXPO_PUBLIC_API_BASE_URL is not configured.');
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  const payload = await response.json().catch(() => ({} as Record<string, unknown>));
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({} as Record<string, unknown>));
 
-  if (!response.ok) {
-    throw new Error(typeof payload.detail === 'string' ? payload.detail : 'Password reset request failed.');
+    if (!response.ok) {
+      throw new Error(typeof payload.detail === 'string' ? payload.detail : 'Password reset request failed.');
+    }
+  } catch (error) {
+    if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
+      throw new Error(`API request timed out after ${API_REQUEST_TIMEOUT_MS / 1000} seconds.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
