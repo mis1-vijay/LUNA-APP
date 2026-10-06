@@ -6,6 +6,9 @@ ADD COLUMN IF NOT EXISTS department text,
     ADD COLUMN IF NOT EXISTS phone text,
     ADD COLUMN IF NOT EXISTS favorite_departments jsonb NOT NULL DEFAULT '[]'::jsonb,
     ADD COLUMN IF NOT EXISTS workspace_layout jsonb NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE public.resources
+ADD COLUMN IF NOT EXISTS viewing_level text NOT NULL DEFAULT 'User';
+NOTIFY pgrst, 'reload schema';
 CREATE TABLE IF NOT EXISTS public.password_reset_tokens (
     employee_id text PRIMARY KEY,
     token_hash text NOT NULL,
