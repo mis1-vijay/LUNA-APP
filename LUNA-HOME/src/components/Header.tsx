@@ -36,6 +36,8 @@ export default function Header() {
         <TouchableOpacity
           style={styles.notificationButton}
           activeOpacity={0.8}
+          accessibilityRole="button"
+          accessibilityLabel="View notifications"
           onPress={() => void openNotifications()}
         >
           <Ionicons name="notifications-outline" size={18} color="#5e1232" />

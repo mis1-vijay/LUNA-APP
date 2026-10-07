@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
-import { Alert, Platform } from 'react-native';
+import { Platform } from 'react-native';
 import {
   clearSession,
   loadStoredSession,
@@ -22,9 +22,9 @@ import {
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
-    shouldShowAlert: false,
-    shouldShowBanner: false,
-    shouldShowList: false,
+    shouldShowAlert: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
     shouldPlaySound: false,
     shouldSetBadge: false,
   }),
@@ -148,20 +148,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
 
     let active = true;
-    const receivedSubscription = Notifications.addNotificationReceivedListener((notification) => {
-      const { title, body } = notification.request.content;
-      Alert.alert(title ?? 'LUNA', body ?? 'You have a new portal notification.');
-    });
-    const responseSubscription = Notifications.addNotificationResponseReceivedListener((response) => {
-      const { title, body } = response.notification.request.content;
-      Alert.alert(title ?? 'LUNA', body ?? 'You opened a portal notification.');
-    });
-
     const registerDevice = async () => {
-      if (Platform.OS === 'web') {
-        return;
-      }
-
       try {
         if (Platform.OS === 'android') {
           await Notifications.setNotificationChannelAsync('portal-updates', {
@@ -196,8 +183,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     return () => {
       active = false;
-      receivedSubscription.remove();
-      responseSubscription.remove();
     };
   }, [isAuthenticated, user]);
 

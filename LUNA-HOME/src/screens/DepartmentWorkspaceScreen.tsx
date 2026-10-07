@@ -44,20 +44,15 @@ const getRequiredRole = (access: string[]) => {
 const isBackendResourceId = (id: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 const canManageResource = (userRole: string, resourceAccessLevels: string | string[]) => {
-  if (!userRole) return false;
-  const normalizedUserRole = userRole.toLowerCase().trim();
-  const userRank = ROLE_RANKS[normalizedUserRole] || 0;
+  const userRank = ROLE_RANKS[userRole.trim().toLowerCase()] ?? 0;
+  const accessLevels = Array.isArray(resourceAccessLevels) ? resourceAccessLevels : [resourceAccessLevels];
+  const requiredRanks = accessLevels.map((accessLevel) => ROLE_RANKS[accessLevel.trim().toLowerCase()] ?? 0);
 
-  const accessArray = Array.isArray(resourceAccessLevels) ? resourceAccessLevels : [resourceAccessLevels];
+  if (userRank === 0 || requiredRanks.length === 0 || requiredRanks.some((rank) => rank === 0)) {
+    return false;
+  }
 
-  let requiredRank = 0;
-  accessArray.forEach((role) => {
-    if (!role) return;
-    const rank = ROLE_RANKS[role.toLowerCase().trim()] || 0;
-    if (rank > requiredRank) requiredRank = rank;
-  });
-
-  return userRank > 0 && requiredRank > 0 && userRank >= requiredRank;
+  return userRank >= Math.max(...requiredRanks);
 };
 const canViewResource = (role: string, access: string[]) => {
   const userRank = getRoleRank(role);
@@ -115,15 +110,14 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
         ...customModules.filter(
           (module) =>
             module.title.trim().toLowerCase() !== 'user access matrix' &&
-            (module.department === department ||
-              (module.type !== 'department' &&
-                (module.title.toLowerCase().includes(department.toLowerCase()) ||
-                  module.department?.toLowerCase().includes(department.toLowerCase())))),
+            module.department?.trim().toLowerCase() === department.trim().toLowerCase(),
         ),
-        ...apiDepartmentResources.map((resource): CustomModule => ({
-          ...resource,
-          type: resource.type,
-        })),
+        ...apiDepartmentResources
+          .filter((resource) => resource.department.trim().toLowerCase() === department.trim().toLowerCase())
+          .map((resource): CustomModule => ({
+            ...resource,
+            type: resource.type,
+          })),
       ].filter((module) => canViewResource(role, module.access)),
     [apiDepartmentResources, customModules, department, role],
   );

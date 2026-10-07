@@ -15,8 +15,8 @@ type DashboardResource = {
   required_role?: string;
   access?: string[];
   role?: string;
-  department_id?: number | string | null;
-  department?: string;
+  department_id?: number | string | { id?: number | string; name?: string; title?: string } | null;
+  department?: string | number | { id?: number | string; name?: string; title?: string } | null;
   type?: string;
   url?: string;
   link?: string;
@@ -26,6 +26,7 @@ type DashboardResource = {
 type DashboardDepartment = {
   id?: number | string;
   name?: string;
+  title?: string;
   tags?: string[];
   accent?: string;
   summary?: string;
@@ -115,7 +116,7 @@ const normalizeApiError = (error: unknown, fallback = 'Unable to reach the Luna 
 };
 
 const buildDepartmentCard = (department: DashboardDepartment): { name: string; tags: string[]; accent: string; summary: string; metrics: Array<{ label: string; value: string }>; access: PortalRole[] } => {
-  const name = department.name ?? 'Department';
+  const name = department.name ?? department.title ?? 'Department';
   const roleAccess = normalizeAccessList(department.access);
 
   return {
@@ -128,17 +129,61 @@ const buildDepartmentCard = (department: DashboardDepartment): { name: string; t
   };
 };
 
-export async function fetchDashboardData() {
+const DASHBOARD_CACHE_TTL_MS = 30_000;
+
+type DashboardData = Awaited<ReturnType<typeof loadDashboardData>>;
+let dashboardCache: { token: string; expiresAt: number; data: DashboardData } | null = null;
+let dashboardRequest: { token: string; version: number; promise: Promise<DashboardData> } | null = null;
+let dashboardCacheVersion = 0;
+
+function invalidateDashboardCache() {
+  dashboardCacheVersion += 1;
+  dashboardCache = null;
+  dashboardRequest = null;
+}
+
+export async function fetchDashboardData(): Promise<DashboardData> {
+  const token = await getAccessToken();
+  if (!token) {
+    invalidateDashboardCache();
+    throw new Error('No auth token available. Please sign in again.');
+  }
+
+  const cachedToken = dashboardCache?.token ?? dashboardRequest?.token;
+  if (cachedToken && cachedToken !== token) {
+    invalidateDashboardCache();
+  }
+
+  const now = Date.now();
+  if (dashboardCache?.token === token && dashboardCache.expiresAt > now) {
+    return dashboardCache.data;
+  }
+
+  const version = dashboardCacheVersion;
+  if (dashboardRequest?.token === token && dashboardRequest.version === version) {
+    return dashboardRequest.promise;
+  }
+
+  const promise = loadDashboardData(token);
+  dashboardRequest = { token, version, promise };
+  try {
+    const data = await promise;
+    if (dashboardCacheVersion === version) {
+      dashboardCache = { token, expiresAt: Date.now() + DASHBOARD_CACHE_TTL_MS, data };
+    }
+    return data;
+  } finally {
+    if (dashboardRequest?.promise === promise) {
+      dashboardRequest = null;
+    }
+  }
+}
+
+async function loadDashboardData(token: string) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
 
   try {
-    const token = await getAccessToken();
-
-    if (!token) {
-      throw new Error('No auth token available. Please sign in again.');
-    }
-
     if (!API_BASE_URL) {
       throw new Error('EXPO_PUBLIC_API_BASE_URL is not configured. Restart the app with start-luna.ps1.');
     }
@@ -166,9 +211,33 @@ export async function fetchDashboardData() {
     const departments: DashboardDepartment[] = Array.isArray(departmentPayload) ? departmentPayload : [];
     const departmentNamesById = new Map(
       departments
-        .filter((department) => department.id != null && department.name)
-        .map((department) => [String(department.id), department.name as string]),
+        .filter((department) => department.id != null && (department.name || department.title))
+        .map((department) => [String(department.id).toLowerCase(), (department.name ?? department.title) as string]),
     );
+    const departmentNamesByName = new Map(
+      departments
+        .map((department) => department.name ?? department.title)
+        .filter((name): name is string => Boolean(name?.trim()))
+        .map((name) => [name.trim().toLowerCase(), name.trim()]),
+    );
+
+    const resolveDepartment = (association: DashboardResource['department']): string | undefined => {
+      if (association == null) {
+        return undefined;
+      }
+      const values = typeof association === 'object'
+        ? [association.name, association.title, association.id]
+        : [association];
+      for (const value of values) {
+        if (value == null || !String(value).trim()) continue;
+        const candidate = String(value).trim();
+        const byId = departmentNamesById.get(candidate.toLowerCase());
+        if (byId) return byId;
+        const byName = departmentNamesByName.get(candidate.toLowerCase());
+        if (byName) return byName;
+      }
+      return undefined;
+    };
 
     const dashboardResources = resources.map((resource) => ({
       ...resource,
@@ -181,9 +250,7 @@ export async function fetchDashboardData() {
     }));
 
     const departmentResources: DashboardDepartmentResource[] = dashboardResources.flatMap((resource) => {
-      const department =
-        (typeof resource.department === 'string' && resource.department.trim()) ||
-        (resource.department_id == null ? undefined : departmentNamesById.get(String(resource.department_id)));
+      const department = resolveDepartment(resource.department) ?? resolveDepartment(resource.department_id);
       if (!department) {
         return [];
       }
@@ -550,19 +617,25 @@ export async function deleteAdminUser(employeeId: string) {
 }
 
 export async function createDepartmentRecord(name: string, sortOrder = 0) {
-  return requestBackend<Record<string, unknown>>('/api/admin/departments', 'POST', {
+  const result = await requestBackend<Record<string, unknown>>('/api/admin/departments', 'POST', {
     name,
     icon: 'folder',
     sort_order: sortOrder,
   });
+  invalidateDashboardCache();
+  return result;
 }
 
 export async function updateDepartmentRecord(departmentId: string, updates: { name?: string; icon?: string; sort_order?: number }) {
-  return requestBackend<Record<string, unknown>>(`/api/admin/departments/${encodeURIComponent(departmentId)}`, 'PUT', updates);
+  const result = await requestBackend<Record<string, unknown>>(`/api/admin/departments/${encodeURIComponent(departmentId)}`, 'PUT', updates);
+  invalidateDashboardCache();
+  return result;
 }
 
 export async function deleteDepartmentRecord(departmentId: string) {
-  return requestBackend<Record<string, unknown>>(`/api/admin/departments/${encodeURIComponent(departmentId)}`, 'DELETE');
+  const result = await requestBackend<Record<string, unknown>>(`/api/admin/departments/${encodeURIComponent(departmentId)}`, 'DELETE');
+  invalidateDashboardCache();
+  return result;
 }
 
 export type ResourceCategory = 'webapp' | 'report' | 'form' | 'module' | 'department' | 'tiny' | 'sheet' | 'admin';
@@ -605,7 +678,7 @@ export async function createModule(data: {
 }) {
   const resourceType = normalizeResourceType(data.category ?? data.type ?? 'webapp');
 
-  return requestBackend<Record<string, unknown>>('/api/admin/resources', 'POST', {
+  const result = await requestBackend<Record<string, unknown>>('/api/admin/resources', 'POST', {
     title: data.title,
     description: data.description ?? '',
     type: resourceType,
@@ -614,6 +687,8 @@ export async function createModule(data: {
     department_id: data.department_id ?? null,
     required_role: data.required_role ?? 'User',
   });
+  invalidateDashboardCache();
+  return result;
 }
 
 export async function updateModule(id: string, data: {
@@ -637,11 +712,15 @@ export async function updateModule(id: string, data: {
   delete payload.category;
   delete payload.link;
 
-  return requestBackend<Record<string, unknown>>(`/api/admin/resources/${encodeURIComponent(id)}`, 'PUT', payload);
+  const result = await requestBackend<Record<string, unknown>>(`/api/admin/resources/${encodeURIComponent(id)}`, 'PUT', payload);
+  invalidateDashboardCache();
+  return result;
 }
 
 export async function deleteModule(id: string) {
-  return requestBackend<Record<string, unknown>>(`/api/admin/resources/${encodeURIComponent(id)}`, 'DELETE');
+  const result = await requestBackend<Record<string, unknown>>(`/api/admin/resources/${encodeURIComponent(id)}`, 'DELETE');
+  invalidateDashboardCache();
+  return result;
 }
 
 export type ResourceMutation = {
@@ -659,7 +738,7 @@ export type ResourceMutation = {
 export async function createResourceRecord(resource: ResourceMutation) {
   const resourceType = normalizeResourceType(resource.category ?? resource.type);
 
-  return requestBackend<Record<string, unknown>>('/api/admin/resources', 'POST', {
+  const result = await requestBackend<Record<string, unknown>>('/api/admin/resources', 'POST', {
     title: resource.title,
     description: resource.description ?? '',
     type: resourceType,
@@ -668,6 +747,8 @@ export async function createResourceRecord(resource: ResourceMutation) {
     department_id: resource.department_id ?? null,
     required_role: resource.required_role ?? 'User',
   });
+  invalidateDashboardCache();
+  return result;
 }
 
 export async function updateResourceRecord(resourceId: string, updates: Partial<ResourceMutation>) {
@@ -681,11 +762,15 @@ export async function updateResourceRecord(resourceId: string, updates: Partial<
   delete payload.category;
   delete payload.link;
 
-  return requestBackend<Record<string, unknown>>(`/api/admin/resources/${encodeURIComponent(resourceId)}`, 'PUT', payload);
+  const result = await requestBackend<Record<string, unknown>>(`/api/admin/resources/${encodeURIComponent(resourceId)}`, 'PUT', payload);
+  invalidateDashboardCache();
+  return result;
 }
 
 export async function deleteResourceRecord(resourceId: string) {
-  return requestBackend<Record<string, unknown>>(`/api/admin/resources/${encodeURIComponent(resourceId)}`, 'DELETE');
+  const result = await requestBackend<Record<string, unknown>>(`/api/admin/resources/${encodeURIComponent(resourceId)}`, 'DELETE');
+  invalidateDashboardCache();
+  return result;
 }
 
 export async function createCustomModuleRecord(module: {
