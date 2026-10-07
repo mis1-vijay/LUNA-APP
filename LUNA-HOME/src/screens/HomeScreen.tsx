@@ -73,10 +73,31 @@ const canViewRole = (currentRole: string | undefined, requiredRole?: string) =>
   canAccessRole(currentRole, requiredRole) ||
   (currentRole?.trim().toLowerCase() === 'manager' && requiredRole?.trim().toLowerCase() === 'admin');
 
-const canManageResource = (currentRole: string | undefined, requiredRole?: string | string[]) =>
-  (Array.isArray(requiredRole)
-    ? requiredRole.some((accessRole) => canAccessRole(currentRole, accessRole))
-    : canAccessRole(currentRole, requiredRole));
+const canManageResource = (currentRole: string | undefined, requiredRole?: string | string[]) => {
+  if (Array.isArray(requiredRole) && requiredRole.length === 0) {
+    return false;
+  }
+
+  const resourceRole: string | undefined = Array.isArray(requiredRole)
+    ? requiredRole.reduce<string | undefined>(
+      (highestRole, accessRole) =>
+        (ROLE_RANK[accessRole.trim().toLowerCase()] ?? 0) >
+        (ROLE_RANK[highestRole?.trim().toLowerCase() ?? ''] ?? 0)
+          ? accessRole
+          : highestRole,
+      undefined,
+    )
+    : requiredRole;
+
+  if (
+    currentRole?.trim().toLowerCase() === 'manager' &&
+    resourceRole?.trim().toLowerCase() === 'admin'
+  ) {
+    return false;
+  }
+
+  return canAccessRole(currentRole, resourceRole);
+};
 
 const isBackendResourceId = (id?: string): id is string =>
   typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);

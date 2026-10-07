@@ -4,23 +4,26 @@
     "slug": "LUNA-HOME",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/luna-logo.png",
     "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/luna-logo.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
     "ios": {
       "supportsTablet": true
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "backgroundColor": "#ffffff",
+        "foregroundImage": "./assets/luna-logo.png"
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.mis1vijay.LUNAHOME"
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/luna-logo.png"
     },
     "plugins": [
       "expo-secure-store",

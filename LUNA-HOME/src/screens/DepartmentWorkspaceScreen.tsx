@@ -26,15 +26,27 @@ import { RootStackParamList } from '../types';
 
 type DepartmentWorkspaceScreenProps = NativeStackScreenProps<RootStackParamList, 'DepartmentWorkspace'>;
 
-const ROLE_RANK: Record<string, number> = { User: 1, Supervisor: 2, Manager: 3, Admin: 4 };
+const ROLE_RANK: Record<string, number> = { user: 1, supervisor: 2, manager: 3, admin: 4 };
+const getRoleRank = (role: string) => ROLE_RANK[role.trim().toLowerCase()] ?? 0;
 const getRequiredRole = (access: string[]) =>
   (['User', 'Supervisor', 'Manager', 'Admin'] as const).find((accessLevel) => access.includes(accessLevel)) ?? 'User';
 const isBackendResourceId = (id: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
-const canManageResource = (role: string, access: string[]) =>
-  access.some((requiredRole) => (ROLE_RANK[role] ?? 0) >= (ROLE_RANK[requiredRole] ?? Infinity));
+const canManageResource = (role: string, access: string[]) => {
+  if (
+    role.trim().toLowerCase() === 'manager' &&
+    access.some((requiredRole) => requiredRole.trim().toLowerCase() === 'admin')
+  ) {
+    return false;
+  }
+
+  return access.length > 0 &&
+    getRoleRank(role) >=
+      access.reduce((highestRank, requiredRole) => Math.max(highestRank, ROLE_RANK[requiredRole.trim().toLowerCase()] ?? Infinity), 0);
+};
 const canViewResource = (role: string, access: string[]) =>
-  canManageResource(role, access) || (role === 'Manager' && access.some((requiredRole) => requiredRole === 'Admin'));
+  access.some((requiredRole) => getRoleRank(role) >= (ROLE_RANK[requiredRole.trim().toLowerCase()] ?? Infinity)) ||
+  (role.trim().toLowerCase() === 'manager' && access.some((requiredRole) => requiredRole.trim().toLowerCase() === 'admin'));
 
 export default function DepartmentWorkspaceScreen({ route, navigation }: DepartmentWorkspaceScreenProps) {
   const { department } = route.params;
@@ -362,7 +374,7 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
             <Text style={styles.accessLabel}>Viewing level</Text>
             <View style={styles.pillRow}>
               {(['User', 'Supervisor', 'Manager', 'Admin'] as const)
-                .filter((accessLevel) => (ROLE_RANK[role] ?? 0) >= ROLE_RANK[accessLevel])
+                .filter((accessLevel) => getRoleRank(role) >= ROLE_RANK[accessLevel.toLowerCase()])
                 .map((accessLevel) => (
                   <TouchableOpacity
                     key={accessLevel}
