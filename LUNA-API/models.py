@@ -70,7 +70,7 @@ class ResourceResponse(BaseModel):
     url: Optional[str] = None
     icon: Optional[str] = None
     department_id: Optional[UUID] = None
-    viewing_level: Optional[str] = None
+    viewing_level: RoleLevel = "User"
 
 
 class ResourceCreate(BaseModel):
@@ -139,7 +139,7 @@ class UserCreate(BaseModel):
     employee_id: str = Field(..., min_length=3, max_length=50)
     name: str = Field(..., min_length=1, max_length=120)
     password: str = Field(..., min_length=6, max_length=128)
-    role: str = Field(default="User", min_length=1, max_length=30)
+    role: RoleLevel = "User"
     department: Optional[str] = None
     active: bool = True
     email: Optional[str] = Field(default=None, max_length=160)
@@ -157,7 +157,7 @@ class UserCreate(BaseModel):
 class UserUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=120)
     password: Optional[str] = Field(default=None, min_length=6, max_length=128)
-    role: Optional[str] = Field(default=None, min_length=1, max_length=30)
+    role: Optional[RoleLevel] = None
     department: Optional[str] = None
     active: Optional[bool] = None
     email: Optional[str] = Field(default=None, max_length=160)

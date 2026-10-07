@@ -6,11 +6,6 @@
     "orientation": "portrait",
     "icon": "./assets/luna-logo.png",
     "userInterfaceStyle": "light",
-    "splash": {
-      "image": "./assets/luna-logo.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
     "ios": {
       "supportsTablet": true
     },

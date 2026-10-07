@@ -10,6 +10,7 @@ export type WebAppItem = {
 };
 
 export type DepartmentItem = {
+  id?: string;
   name: string;
   tags: string[];
   accent: string;

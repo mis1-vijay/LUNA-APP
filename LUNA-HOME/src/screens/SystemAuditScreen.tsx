@@ -52,7 +52,7 @@ export default function SystemAuditScreen({ navigation }: SystemAuditScreenProps
   }, []);
 
   useEffect(() => {
-    if (role === 'Admin') {
+    if (role === 'Admin' || role === 'Manager') {
       void loadLogs();
     } else {
       setLoading(false);
@@ -105,15 +105,15 @@ export default function SystemAuditScreen({ navigation }: SystemAuditScreenProps
           accessibilityLabel="Refresh audit logs"
           onPress={() => void loadLogs(true)}
           style={styles.refreshButton}
-          disabled={loading || refreshing || role !== 'Admin'}
+          disabled={loading || refreshing || (role !== 'Admin' && role !== 'Manager')}
         >
           <Ionicons name="refresh" size={20} color="#5e1232" />
         </TouchableOpacity>
       </View>
 
-      {role !== 'Admin' ? (
+      {role !== 'Admin' && role !== 'Manager' ? (
         <View style={styles.state}>
-          <Text style={styles.errorText}>Admin access is required to view audit logs.</Text>
+          <Text style={styles.errorText}>Manager or Admin access is required to view audit logs.</Text>
         </View>
       ) : loading ? (
         <View style={styles.state}>

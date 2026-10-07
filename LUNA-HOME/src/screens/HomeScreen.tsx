@@ -51,51 +51,30 @@ type ResourceFormState = {
   category: ResourceCategory;
 };
 
-const ROLE_RANKS: Record<string, number> = { user: 1, supervisor: 2, manager: 3, admin: 4 };
 const ROLE_OPTIONS: PortalRoleLevel[] = ['User', 'Supervisor', 'Manager', 'Admin'];
 
 const getRequiredRole = (access: string[]) => {
-  let highestRole: PortalRoleLevel = 'User';
-  let highestRank = ROLE_RANKS.user;
-  access.forEach((roleName) => {
-    const normalizedRole = roleName.trim().toLowerCase();
-    const rank = ROLE_RANKS[normalizedRole] ?? 0;
-    if (rank > highestRank) {
-      highestRank = rank;
-      highestRole = ROLE_OPTIONS.find((candidate) => candidate.toLowerCase() === normalizedRole) ?? highestRole;
-    }
-  });
-  return highestRole;
+  const normalizedAccess = access.map((roleName) => roleName.trim().toLowerCase());
+  return [...ROLE_OPTIONS].reverse().find((option) => normalizedAccess.includes(option.toLowerCase())) ?? 'User';
 };
 
-const canAccessRole = (currentRole: string | undefined, requiredRole?: string) => {
-  const current = ROLE_RANKS[currentRole?.trim().toLowerCase() ?? ''] ?? 0;
-  const needed = ROLE_RANKS[requiredRole?.trim().toLowerCase() || 'user'] ?? 0;
-  return current > 0 && needed > 0 && current >= needed;
-};
-
-const canAccessRoles = (currentRole: string | undefined, requiredRoles: string[]) => {
-  const currentRank = ROLE_RANKS[currentRole?.trim().toLowerCase() ?? ''] ?? 0;
-  const requiredRank = requiredRoles.reduce(
-    (highestRank, requiredRole) => Math.max(highestRank, ROLE_RANKS[requiredRole.trim().toLowerCase()] ?? 0),
-    0,
-  );
-  return currentRank > 0 && requiredRank > 0 && currentRank >= requiredRank;
-};
-
-const canViewRole = canAccessRole;
-
-const canManageResource = (userRole: string | undefined, resourceAccessLevels: string | string[]) => {
-  const userRank = ROLE_RANKS[userRole?.trim().toLowerCase() ?? ''] ?? 0;
-  const accessLevels = Array.isArray(resourceAccessLevels) ? resourceAccessLevels : [resourceAccessLevels];
-  const requiredRanks = accessLevels.map((accessLevel) => ROLE_RANKS[accessLevel.trim().toLowerCase()] ?? 0);
-
-  if (userRank === 0 || requiredRanks.length === 0 || requiredRanks.some((rank) => rank === 0)) {
-    return false;
+const canViewRoles = (userRole: string | undefined, accessLevels: string | string[]) => {
+  const normalizedRole = userRole?.trim().toLowerCase();
+  if (normalizedRole === 'admin' || normalizedRole === 'manager') {
+    return true;
   }
 
-  return userRank >= Math.max(...requiredRanks);
+  const permittedLevels =
+    normalizedRole === 'supervisor' ? ['user', 'supervisor'] : normalizedRole === 'user' ? ['user'] : [];
+  const requiredLevels = Array.isArray(accessLevels) ? accessLevels : [accessLevels];
+  return requiredLevels.some((level) => permittedLevels.includes(level.trim().toLowerCase()));
 };
+
+const canAccessRole = (currentRole: string | undefined, requiredRole?: string) =>
+  canViewRoles(currentRole, requiredRole ?? 'User');
+const canAccessRoles = canViewRoles;
+const canViewRole = canAccessRole;
+const canManageResource = (userRole: string | undefined) => userRole?.toLowerCase() === 'admin';
 
 const isBackendResourceId = (id?: string): id is string =>
   typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
@@ -125,7 +104,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
   });
   const [savingResource, setSavingResource] = useState(false);
 
-  const isAdmin = role.trim().toLowerCase() === 'admin';
+  const isAdmin = canManageResource(role);
 
   const loadData = async () => {
     try {
@@ -172,7 +151,8 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
   const displayedDepartments = useMemo(
     () =>
       [...dynamicDepartments, ...customModules.filter((item) => item.type === 'department' && item.title.trim().toLowerCase() !== 'user access matrix').map((item) => ({
-        name: item.title,
+      id: undefined,
+      name: item.title,
         tags: ['Custom', 'Department'],
         accent: item.accent,
         summary: item.subtitle,
@@ -184,20 +164,25 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
 
   const visibleReports = useMemo(
     () =>
-      [...dynamicReports, ...customModules.filter((item) => (item.type === 'report' || item.type === 'resource') && item.title.trim().toLowerCase() !== 'user access matrix').map((item) => ({
-        id: item.id,
-        title: item.title,
-        subtitle: item.subtitle,
-        meta: item.type === 'report' ? 'Report' : 'Form',
-        accent: item.accent,
-        role: getRequiredRole(item.access),
-        category: 'Report' as const,
-        url: item.link,
-      }))].filter((item) => {
-        const isSystemAudit = item.title.trim().toLowerCase() === 'system audit';
-        return (!isSystemAudit || canViewRole(role, 'Admin')) && canViewRole(role, item.role ?? 'User');
-      }),
-    [customModules, dynamicReports, isAdmin, role],
+      [
+        ...dynamicReports.filter((item) => canViewRole(role, item.role ?? 'User')),
+        ...customModules.filter(
+          (item) =>
+            (item.type === 'report' || item.type === 'resource') &&
+            item.title.trim().toLowerCase() !== 'user access matrix' &&
+            canAccessRoles(role, item.access),
+        ).map((item) => ({
+          id: item.id,
+          title: item.title,
+          subtitle: item.subtitle,
+          meta: item.type === 'report' ? 'Report' : 'Form',
+          accent: item.accent,
+          role: getRequiredRole(item.access),
+          category: 'Report' as const,
+          url: item.link,
+        })),
+      ],
+    [customModules, dynamicReports, role],
   );
 
   const visibleAdminResources = useMemo(
@@ -412,7 +397,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
                     });
                   }}
                 />
-                {canManageResource(role, app.access) && app.id ? (
+                {canManageResource(role) && app.id ? (
                   <View style={styles.adminActionRow}>
                     <TouchableOpacity style={styles.adminActionButton} onPress={() => openEditResource('webapp', app)}>
                       <Text style={styles.adminActionText}>Edit</Text>
@@ -444,7 +429,12 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
                 accentColor={department.accent}
                 isFavorite={isFavorite(`Department:${department.name}`)}
                 onFavoritePress={() => toggleFavorite(`Department:${department.name}`)}
-                onPress={() => navigation.navigate('DepartmentWorkspace', { department: department.name })}
+                onPress={() =>
+                  navigation.navigate('DepartmentWorkspace', {
+                    department: department.name,
+                    departmentId: department.id,
+                  })
+                }
               />
             ))}
           </View>
@@ -483,7 +473,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
                   void handleModulePress(item.title, item.url);
                 }}
               />
-              {'id' in item && canManageResource(role, item.role) && item.id ? (
+              {'id' in item && canManageResource(role) && item.id ? (
                 <View style={styles.adminActionRow}>
                   <TouchableOpacity style={styles.adminActionButton} onPress={() => openEditResource('report', item)}>
                     <Text style={styles.adminActionText}>Edit</Text>
@@ -522,7 +512,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
                   onFavoritePress={() => toggleFavorite(`Admin:${item.title}`)}
                   onPress={() => handleModulePress(item.title, item.title === 'Admin Console' ? undefined : ('url' in item ? item.url : undefined))}
                 />
-                {'id' in item && canManageResource(role, item.role) && item.id ? (
+                {'id' in item && canManageResource(role) && item.id ? (
                   <View style={styles.adminActionRow}>
                     <TouchableOpacity style={styles.adminActionButton} onPress={() => openEditResource('admin', item)}>
                       <Text style={styles.adminActionText}>Edit</Text>

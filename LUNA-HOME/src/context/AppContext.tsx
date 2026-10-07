@@ -51,6 +51,7 @@ export type CustomModule = {
   link: string;
   access: string[];
   department?: string;
+  departmentId?: string;
 };
 
 type AppContextValue = {

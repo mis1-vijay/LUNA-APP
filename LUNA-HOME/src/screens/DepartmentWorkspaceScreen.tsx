@@ -20,53 +20,36 @@ import {
   deleteResourceRecord,
   fetchDepartmentResources,
   type DashboardDepartmentResource,
+  createResourceRecord,
   updateResourceRecord,
 } from '../services/portalApi';
 import { RootStackParamList } from '../types';
 
 type DepartmentWorkspaceScreenProps = NativeStackScreenProps<RootStackParamList, 'DepartmentWorkspace'>;
 
-const ROLE_RANKS: Record<string, number> = { user: 1, supervisor: 2, manager: 3, admin: 4 };
-const getRoleRank = (role: string) => ROLE_RANKS[role.trim().toLowerCase()] ?? 0;
+const ROLE_OPTIONS = ['User', 'Supervisor', 'Manager', 'Admin'] as const;
 const getRequiredRole = (access: string[]) => {
-  let highestRole = 'User';
-  let highestRank = ROLE_RANKS.user;
-  access.forEach((role) => {
-    const normalizedRole = role.trim().toLowerCase();
-    const rank = ROLE_RANKS[normalizedRole] ?? 0;
-    if (rank > highestRank) {
-      highestRank = rank;
-      highestRole = normalizedRole.charAt(0).toUpperCase() + normalizedRole.slice(1);
-    }
-  });
-  return highestRole;
+  const normalizedAccess = access.map((role) => role.trim().toLowerCase());
+  return [...ROLE_OPTIONS].reverse().find((option) => normalizedAccess.includes(option.toLowerCase())) ?? 'User';
 };
 const isBackendResourceId = (id: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
-const canManageResource = (userRole: string, resourceAccessLevels: string | string[]) => {
-  const userRank = ROLE_RANKS[userRole.trim().toLowerCase()] ?? 0;
-  const accessLevels = Array.isArray(resourceAccessLevels) ? resourceAccessLevels : [resourceAccessLevels];
-  const requiredRanks = accessLevels.map((accessLevel) => ROLE_RANKS[accessLevel.trim().toLowerCase()] ?? 0);
-
-  if (userRank === 0 || requiredRanks.length === 0 || requiredRanks.some((rank) => rank === 0)) {
-    return false;
+const canManageResource = (userRole: string | undefined) => userRole?.toLowerCase() === 'admin';
+const canViewResource = (userRole: string, accessLevels: string[]) => {
+  const normalizedRole = userRole.trim().toLowerCase();
+  if (normalizedRole === 'admin' || normalizedRole === 'manager') {
+    return true;
   }
 
-  return userRank >= Math.max(...requiredRanks);
-};
-const canViewResource = (role: string, access: string[]) => {
-  const userRank = getRoleRank(role);
-  const requiredRank = access.reduce(
-    (highestRank, requiredRole) => Math.max(highestRank, ROLE_RANKS[requiredRole.trim().toLowerCase()] ?? 0),
-    0,
-  );
-  return userRank > 0 && requiredRank > 0 && userRank >= requiredRank;
+  const permittedLevels =
+    normalizedRole === 'supervisor' ? ['user', 'supervisor'] : normalizedRole === 'user' ? ['user'] : [];
+  return accessLevels.some((level) => permittedLevels.includes(level.trim().toLowerCase()));
 };
 
 export default function DepartmentWorkspaceScreen({ route, navigation }: DepartmentWorkspaceScreenProps) {
-  const { department } = route.params;
+  const { department, departmentId } = route.params;
   const { addCustomModule, removeCustomModule, customModules, role } = useAppContext();
-  const canManageResources = role.trim().toLowerCase() === 'admin';
+  const canManageResources = canManageResource(role);
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -83,7 +66,7 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
     let isCurrent = true;
     setIsLoading(true);
     setLoadError(null);
-    fetchDepartmentResources(department)
+    fetchDepartmentResources(departmentId)
       .then((resources) => {
         if (isCurrent) {
           setApiDepartmentResources(resources);
@@ -102,24 +85,30 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
     return () => {
       isCurrent = false;
     };
-  }, [department, reloadKey]);
+  }, [department, departmentId, reloadKey]);
 
   const departmentModules = useMemo(
     () =>
       [
         ...customModules.filter(
           (module) =>
-            module.title.trim().toLowerCase() !== 'user access matrix' &&
-            module.department?.trim().toLowerCase() === department.trim().toLowerCase(),
+            (departmentId != null && module.departmentId === departmentId) ||
+            (module.departmentId == null &&
+              module.department?.trim().toLowerCase() === department.trim().toLowerCase()),
         ),
         ...apiDepartmentResources
-          .filter((resource) => resource.department.trim().toLowerCase() === department.trim().toLowerCase())
+          .filter((resource) => departmentId != null && resource.departmentId === departmentId)
           .map((resource): CustomModule => ({
             ...resource,
             type: resource.type,
           })),
-      ].filter((module) => canViewResource(role, module.access)),
-    [apiDepartmentResources, customModules, department, role],
+      ]
+        .filter(
+          (module) =>
+            module.title.trim().toLowerCase() !== 'user access matrix',
+        )
+        .filter((module) => canViewResource(role, module.access)),
+    [apiDepartmentResources, customModules, department, departmentId, role],
   );
 
   const handleAddResource = async () => {
@@ -179,7 +168,19 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
         department,
       };
 
-      await addCustomModule(newModule);
+      if (!departmentId) {
+        await addCustomModule(newModule);
+      } else {
+        await createResourceRecord({
+          title: newModule.title,
+          description: newModule.subtitle,
+          type: newType === 'webApp' ? 'webapp' : newType === 'report' ? 'report' : 'module',
+          url: newModule.link,
+          department_id: departmentId,
+          required_role: newAccessLevel,
+        });
+        setReloadKey((current) => current + 1);
+      }
       setIsAddOpen(false);
       setNewTitle('');
       setNewSubtitle('');
@@ -336,7 +337,7 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
                   </View>
                   <Text style={styles.rowChevron}>{'>'}</Text>
                 </TouchableOpacity>
-                {Boolean(item.id) && canManageResource(role, item.access) ? (
+                {Boolean(item.id) && canManageResource(role) ? (
                   <View style={styles.resourceActions}>
                     <TouchableOpacity onPress={() => openEditResource(item)} style={styles.resourceActionButton}>
                       <Text style={styles.resourceActionText}>Edit</Text>
@@ -387,8 +388,8 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
 
             <Text style={styles.accessLabel}>Viewing level</Text>
             <View style={styles.pillRow}>
-              {(['User', 'Supervisor', 'Manager', 'Admin'] as const)
-                .filter((accessLevel) => getRoleRank(role) >= ROLE_RANKS[accessLevel.toLowerCase()])
+              {ROLE_OPTIONS
+                .filter(() => canManageResource(role))
                 .map((accessLevel) => (
                   <TouchableOpacity
                     key={accessLevel}

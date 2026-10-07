@@ -1,5 +1,5 @@
 import { API_BASE_URL, API_REQUEST_TIMEOUT_MS } from '../config/api';
-import type { PortalRole } from '../data/portalData';
+import type { DepartmentItem, PortalRole } from '../data/portalData';
 import { clearSession, getAccessToken } from './authService';
 
 type DashboardResource = {
@@ -39,6 +39,7 @@ type DashboardDepartment = {
 
 export type DashboardDepartmentResource = {
   id: string;
+  departmentId: string;
   type: 'webApp' | 'report' | 'form' | 'resource';
   title: string;
   subtitle: string;
@@ -115,11 +116,12 @@ const normalizeApiError = (error: unknown, fallback = 'Unable to reach the Luna 
   return fallback;
 };
 
-const buildDepartmentCard = (department: DashboardDepartment): { name: string; tags: string[]; accent: string; summary: string; metrics: Array<{ label: string; value: string }>; access: PortalRole[] } => {
+const buildDepartmentCard = (department: DashboardDepartment): DepartmentItem => {
   const name = department.name ?? department.title ?? 'Department';
   const roleAccess = normalizeAccessList(department.access);
 
   return {
+    id: department.id == null ? undefined : String(department.id),
     name,
     tags: department.tags ?? ['Reports', 'Forms'],
     accent: department.accent ?? departmentAccentMap[name] ?? '#0284c7',
@@ -209,34 +211,16 @@ async function loadDashboardData(token: string) {
     ]);
     const resources: DashboardResource[] = Array.isArray(resourcePayload) ? resourcePayload : [];
     const departments: DashboardDepartment[] = Array.isArray(departmentPayload) ? departmentPayload : [];
-    const departmentNamesById = new Map(
+    const departmentsById = new Map(
       departments
         .filter((department) => department.id != null && (department.name || department.title))
-        .map((department) => [String(department.id).toLowerCase(), (department.name ?? department.title) as string]),
+        .map((department) => [String(department.id).toLowerCase(), department]),
     );
-    const departmentNamesByName = new Map(
-      departments
-        .map((department) => department.name ?? department.title)
-        .filter((name): name is string => Boolean(name?.trim()))
-        .map((name) => [name.trim().toLowerCase(), name.trim()]),
-    );
-
-    const resolveDepartment = (association: DashboardResource['department']): string | undefined => {
-      if (association == null) {
-        return undefined;
-      }
-      const values = typeof association === 'object'
-        ? [association.name, association.title, association.id]
-        : [association];
-      for (const value of values) {
-        if (value == null || !String(value).trim()) continue;
-        const candidate = String(value).trim();
-        const byId = departmentNamesById.get(candidate.toLowerCase());
-        if (byId) return byId;
-        const byName = departmentNamesByName.get(candidate.toLowerCase());
-        if (byName) return byName;
-      }
-      return undefined;
+    const resolveDepartmentId = (association: DashboardResource['department_id']) => {
+      if (association == null) return undefined;
+      const value = typeof association === 'object' ? association.id : association;
+      if (value == null || !String(value).trim()) return undefined;
+      return departmentsById.get(String(value).trim().toLowerCase());
     };
 
     const dashboardResources = resources.map((resource) => ({
@@ -250,23 +234,27 @@ async function loadDashboardData(token: string) {
     }));
 
     const departmentResources: DashboardDepartmentResource[] = dashboardResources.flatMap((resource) => {
-      const department = resolveDepartment(resource.department) ?? resolveDepartment(resource.department_id);
+      const department = resolveDepartmentId(resource.department_id);
       if (!department) {
         return [];
       }
+      const departmentId =
+        department.id == null ? undefined : String(department.id);
+      if (!departmentId) return [];
 
       const type: DashboardDepartmentResource['type'] =
         resource.type === 'webapp' ? 'webApp' : resource.type === 'form' ? 'form' : resource.type === 'report' || resource.type === 'sheet' ? 'report' : 'resource';
 
       return [{
         id: resource.id == null ? '' : String(resource.id),
+        departmentId,
         type,
         title: resource.title ?? 'Portal resource',
         subtitle: resource.subtitle,
         accent: resource.accent ?? '#0284c7',
         link: resource.url ?? '',
         access: normalizeAccessList(resource.required_role),
-        department,
+        department: department.name ?? department.title ?? '',
       }];
     });
 
@@ -514,10 +502,12 @@ async function requestBackend<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 
   }
 }
 
-export async function fetchDepartmentResources(departmentName: string): Promise<DashboardDepartmentResource[]> {
+export async function fetchDepartmentResources(departmentId?: string): Promise<DashboardDepartmentResource[]> {
+  if (!departmentId) {
+    return [];
+  }
   const dashboard = await fetchDashboardData();
-  const normalizedName = departmentName.trim().toLowerCase();
-  return dashboard.departmentResources.filter((resource) => resource.department.trim().toLowerCase() === normalizedName);
+  return dashboard.departmentResources.filter((resource) => resource.departmentId === departmentId);
 }
 
 export type PortalNotification = {

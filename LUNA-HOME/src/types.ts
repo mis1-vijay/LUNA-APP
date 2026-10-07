@@ -1,7 +1,7 @@
 export type RootStackParamList = {
   Login: undefined;
   MainTabs: undefined;
-  DepartmentWorkspace: { department: string };
+  DepartmentWorkspace: { department: string; departmentId?: string };
   WebAppDetail: {
     appName: string;
     appSubtitle: string;

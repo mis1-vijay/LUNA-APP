@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 import main
 from main import (
@@ -41,6 +42,28 @@ class BackendContractTests(unittest.TestCase):
         self.assertGreaterEqual(result["departments"], 1)
         self.assertGreaterEqual(result["resources"], 1)
 
+    def test_global_seed_resources_have_no_department_assignment(self):
+        supabase = MagicMock()
+        departments_table = MagicMock()
+        resources_table = MagicMock()
+        supabase.table.side_effect = lambda table: {
+            "departments": departments_table,
+            "resources": resources_table,
+        }[table]
+        departments_table.select.return_value.execute.return_value.data = [
+            {"id": "6b59904d-9918-4f7e-8d1c-609936912d14", "name": "Automation", "sort_order": 1},
+        ]
+        resources_table.select.return_value.execute.return_value.data = []
+
+        with patch("main.get_supabase", return_value=supabase):
+            ensure_seed_data()
+
+        seed_rows = resources_table.insert.call_args.args[0]
+        global_titles = {"Task Manager", "Daily Production Summary", "System Audit", "User Access Matrix"}
+        for resource in seed_rows:
+            if resource["title"] in global_titles:
+                self.assertIsNone(resource["department_id"])
+
     def test_role_visibility_is_strictly_hierarchical(self):
         self.assertTrue(has_access("User", "User"))
         self.assertFalse(has_access("User", "Supervisor"))
@@ -48,7 +71,7 @@ class BackendContractTests(unittest.TestCase):
         self.assertTrue(has_access("Supervisor", "Supervisor"))
         self.assertFalse(has_access("Supervisor", "Manager"))
         self.assertFalse(has_access("Manager", "Admin"))
-        self.assertTrue(has_access("Admin", "unknown"))
+        self.assertFalse(has_access("Admin", "unknown"))
 
     def test_non_admin_roles_are_forbidden_from_mutation_dependencies(self):
         for role in ("User", "Supervisor", "Manager"):
@@ -56,8 +79,57 @@ class BackendContractTests(unittest.TestCase):
                 require_admin({"role": role})
             self.assertEqual(raised.exception.status_code, 403)
         self.assertEqual(require_admin({"role": "Admin"})["role"], "Admin")
+        self.assertEqual(require_admin({"role": "admin"})["role"], "admin")
 
-    def test_resource_creation_is_admin_only_and_updates_use_authenticated_resource_access(self):
+    def test_resource_response_uses_canonical_role_contract_and_user_fallback(self):
+        resource = main.ResourceResponse(
+            id="a658e481-c235-4cc5-b42a-3773bd68d2ce",
+            title="User resource",
+            viewing_level="User",
+        )
+        self.assertEqual(resource.viewing_level, "User")
+
+        with self.assertRaises(ValidationError):
+            main.ResourceResponse(
+                id="a658e481-c235-4cc5-b42a-3773bd68d2ce",
+                title="Invalid resource",
+                viewing_level="Executive",
+            )
+
+    def test_user_mutation_models_accept_only_canonical_roles(self):
+        with self.assertRaises(ValidationError):
+            main.UserCreate(
+                employee_id="EMP123",
+                name="Example User",
+                password="StrongPassword123",
+                role="Executive",
+            )
+
+        with self.assertRaises(ValidationError):
+            UserUpdate(role="executive")
+
+    def test_schema_migration_matches_database_tables_and_department_contract(self):
+        migration_path = main.Path(__file__).resolve().parent / "supabase_schema_fix.sql"
+        migration = migration_path.read_text(encoding="utf-8").lower()
+
+        for table in (
+            "users",
+            "departments",
+            "resources",
+            "password_reset_tokens",
+            "notifications",
+            "user_push_tokens",
+            "audit_logs",
+        ):
+            self.assertIn(f"public.{table}", migration)
+
+        self.assertIn("department_id uuid", migration)
+        self.assertIn("references public.departments(id)", migration)
+        self.assertIn("password_reset_tokens_employee_id_uidx", migration)
+        self.assertIn("user_push_tokens_employee_id_fkey", migration)
+        self.assertIn("'user access matrix'", migration)
+
+    def test_all_resource_mutations_require_admin(self):
         mutation_routes = [
             route
             for route in app.routes
@@ -68,11 +140,7 @@ class BackendContractTests(unittest.TestCase):
         for route in mutation_routes:
             with self.subTest(path=route.path):
                 dependencies = [dependency.call for dependency in route.dependant.dependencies]
-                if "POST" in route.methods:
-                    self.assertIn(require_admin, dependencies)
-                else:
-                    self.assertIn(main.get_current_user, dependencies)
-                    self.assertNotIn(require_admin, dependencies)
+                self.assertIn(require_admin, dependencies)
 
     def test_resource_visibility_levels_are_strictly_hierarchical(self):
         self.assertEqual(visible_resource_levels("User"), ["User"])
@@ -159,54 +227,38 @@ class BackendContractTests(unittest.TestCase):
                     }:
                         self.assertEqual(resource["department_id"], department_id)
 
-    def test_managers_can_update_lower_level_resources_but_cannot_promote_or_change_admin_resources(self):
+    def test_only_admin_can_update_or_delete_resources(self):
         resource_id = "a658e481-c235-4cc5-b42a-3773bd68d2ce"
         resource_table = MagicMock()
-        audit_table = MagicMock()
         supabase = MagicMock()
-        supabase.table.side_effect = lambda name: {
-            "resources": resource_table,
-            "audit_logs": audit_table,
-        }[name]
+        supabase.table.side_effect = lambda name: resource_table if name == "resources" else MagicMock()
         resource_table.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
             {"id": resource_id, "title": "User resource", "viewing_level": "User"}
         ]
         updated_resource = {"id": resource_id, "title": "User resource", "viewing_level": "Manager"}
         resource_table.update.return_value.eq.return_value.execute.return_value.data = [updated_resource]
 
-        with patch("main.get_supabase", return_value=supabase):
-            result = update_resource(
+        with self.assertRaises(HTTPException) as manager_update:
+            update_resource(
                 resource_id,
                 main.ResourceUpdate(viewing_level="Manager"),
                 {"role": "Manager", "employee_id": "MGR1"},
             )
-        self.assertEqual(result, updated_resource)
+        self.assertEqual(manager_update.exception.status_code, 403)
 
-        with patch("main.get_supabase", return_value=supabase):
-            with self.assertRaises(HTTPException) as promoted:
-                update_resource(
-                    resource_id,
-                    main.ResourceUpdate(viewing_level="Admin"),
-                    {"role": "Manager", "employee_id": "MGR1"},
-                )
-        self.assertEqual(promoted.exception.status_code, 403)
-
-        resource_table.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
-            {"id": resource_id, "title": "Admin resource", "viewing_level": "Admin"}
-        ]
-        with patch("main.get_supabase", return_value=supabase):
-            with self.assertRaises(HTTPException) as admin_resource:
-                update_resource(
-                    resource_id,
-                    main.ResourceUpdate(title="Not allowed"),
-                    {"role": "Manager", "employee_id": "MGR1"},
-                )
-        self.assertEqual(admin_resource.exception.status_code, 403)
-        with patch("main.get_supabase", return_value=supabase):
-            with self.assertRaises(HTTPException) as admin_delete:
-                delete_resource(resource_id, {"role": "Manager", "employee_id": "MGR1"})
-        self.assertEqual(admin_delete.exception.status_code, 403)
+        with self.assertRaises(HTTPException) as manager_delete:
+            delete_resource(resource_id, {"role": "Manager", "employee_id": "MGR1"})
+        self.assertEqual(manager_delete.exception.status_code, 403)
+        resource_table.select.assert_not_called()
         resource_table.delete.assert_not_called()
+
+        with patch("main.get_supabase", return_value=supabase):
+            result = update_resource(
+                resource_id,
+                main.ResourceUpdate(viewing_level="Manager"),
+                {"role": "Admin", "employee_id": "ADMIN1"},
+            )
+        self.assertEqual(result, updated_resource)
 
     def test_notification_role_filter_is_strictly_hierarchical(self):
         self.assertTrue(notification_role_allows("Manager", "Manager"))
@@ -346,10 +398,10 @@ class BackendContractTests(unittest.TestCase):
         self.assertTrue(all(message["body"] == "New module" for message in messages))
         send_request.assert_called_once_with(request, timeout=10)
 
-    def test_audit_log_endpoint_is_admin_only_and_returns_recent_rows(self):
+    def test_audit_log_endpoint_allows_admin_and_manager_and_returns_recent_rows(self):
         route = next(route for route in app.routes if route.path == "/api/audit-logs")
         dependencies = [dependency.call for dependency in route.dependant.dependencies]
-        self.assertIn(require_admin, dependencies)
+        self.assertIn(main.require_admin_or_manager, dependencies)
 
         expected_logs = [{"id": "log-1", "action": "resource_created"}]
         supabase = MagicMock()

@@ -82,13 +82,6 @@ EXPO_PUSH_BATCH_SIZE = 100
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-ROLE_PRIORITY = {
-    "User": 1,
-    "Supervisor": 2,
-    "Manager": 3,
-    "Admin": 4,
-}
-
 DEFAULT_DEPARTMENTS = [
     {"name": "Automation", "icon": "cpu", "sort_order": 1},
     {"name": "Hiwin", "icon": "factory", "sort_order": 2},
@@ -112,16 +105,16 @@ DEPARTMENT_SORT_ORDER = {
 }
 
 DEFAULT_RESOURCES = [
-    {"title": "Task Manager", "description": "Daily task planning and execution", "type": "webapp", "url": "https://example.com/task-manager", "icon": "clipboard", "department": "Automation", "required_role": "User"},
+    {"title": "Task Manager", "description": "Daily task planning and execution", "type": "webapp", "url": "https://example.com/task-manager", "icon": "clipboard", "required_role": "User"},
     {"title": "Stock Query", "description": "Material and inventory visibility", "type": "webapp", "url": "https://example.com/stock-query", "icon": "box", "department": "Machining", "required_role": "Manager"},
     {"title": "Packing Photos", "description": "Packing and dispatch visual checks", "type": "webapp", "url": "https://example.com/packing-photos", "icon": "image", "department": "Packing", "required_role": "User"},
     {"title": "Production Board", "description": "Line performance and bottlenecks", "type": "webapp", "url": "https://example.com/production-board", "icon": "chart", "department": "Automation", "required_role": "Supervisor"},
     {"title": "Quality Tracker", "description": "Defect and compliance monitoring", "type": "webapp", "url": "https://example.com/quality-tracker", "icon": "shield-check", "department": "Hiwin", "required_role": "User"},
-    {"title": "Daily Production Summary", "description": "Latest update from the floor", "type": "report", "icon": "file-text", "department": "Automation", "required_role": "User"},
+    {"title": "Daily Production Summary", "description": "Latest update from the floor", "type": "report", "icon": "file-text", "required_role": "User"},
     {"title": "Gate Pass Register", "description": "Vehicle and dispatch tracking", "type": "form", "icon": "clipboard-list", "department": "Dispatch", "required_role": "Supervisor"},
     {"title": "Equipment Downtime Log", "description": "Trend and maintenance notes", "type": "report", "icon": "tool", "department": "Machining", "required_role": "Manager"},
-    {"title": "User Access Matrix", "description": "Role and department mapping", "type": "report", "icon": "users", "department": "Automation", "required_role": "Admin"},
-    {"title": "System Audit", "description": "Recent operational review log", "type": "report", "icon": "activity", "department": "Automation", "required_role": "Manager"},
+    {"title": "User Access Matrix", "description": "Role and department mapping", "type": "report", "icon": "users", "required_role": "Admin"},
+    {"title": "System Audit", "description": "Recent operational review log", "type": "report", "icon": "activity", "required_role": "Manager"},
 ]
 
 
@@ -147,21 +140,24 @@ def get_jwt_secret_key() -> str:
 
 def has_access(user_role: str, required_role: Optional[str]) -> bool:
     normalized_user_role = normalize_required_role(user_role)
-    if normalized_user_role == "Admin":
-        return True
-
     normalized_required_role = normalize_required_role(required_role)
-    user_priority = ROLE_PRIORITY.get(normalized_user_role, 0)
-    required_priority = ROLE_PRIORITY.get(normalized_required_role, 0)
-    return user_priority > 0 and required_priority > 0 and user_priority >= required_priority
+    allowed_levels = {
+        "User": {"User"},
+        "Supervisor": {"User", "Supervisor"},
+        "Manager": {"User", "Supervisor", "Manager"},
+        "Admin": {"User", "Supervisor", "Manager", "Admin"},
+    }
+    return normalized_required_role in allowed_levels.get(normalized_user_role, set())
 
 
 def can_view_resource(user_role: str, required_role: Optional[str]) -> bool:
     normalized_user_role = normalize_required_role(user_role)
     normalized_required_role = normalize_required_role(required_role)
-    return has_access(normalized_user_role, normalized_required_role) or (
-        normalized_user_role == "Manager" and normalized_required_role == "Admin"
-    )
+    if normalized_user_role in {"Admin", "Manager"}:
+        return True
+    if normalized_user_role == "Supervisor":
+        return normalized_required_role in {"User", "Supervisor"}
+    return normalized_user_role == "User" and normalized_required_role == "User"
 
 
 def visible_resource_levels(user_role: str) -> Optional[List[str]]:
@@ -201,34 +197,8 @@ def fetch_visible_resources(supabase: Any, user_role: str) -> List[Dict[str, Any
     ]
 
 
-def require_resource_management_access(
-    current_user: Dict[str, Any],
-    resource: Dict[str, Any],
-    requested_role: Optional[str] = None,
-) -> None:
-    user_role = normalize_required_role(str(current_user.get("role") or "User"))
-    resource_role = next(
-        (
-            str(resource[field])
-            for field in ("viewing_level", "access_level", "required_role", "role")
-            if isinstance(resource.get(field), str) and resource[field].strip()
-        ),
-        None,
-    )
-    if not has_access(user_role, resource_role):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient access to manage this resource")
-
-    if requested_role is not None and not has_access(user_role, requested_role):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You cannot assign this resource to a higher access level",
-        )
-
-
 def notification_role_allows(user_role: str, target_role_level: str) -> bool:
-    user_priority = ROLE_PRIORITY.get(normalize_required_role(user_role), 0)
-    target_priority = ROLE_PRIORITY.get(normalize_required_role(target_role_level), 0)
-    return user_priority > 0 and target_priority > 0 and user_priority >= target_priority
+    return has_access(user_role, target_role_level)
 
 
 def get_user_by_employee_id(employee_id: str) -> Optional[Dict[str, Any]]:
@@ -443,7 +413,7 @@ def get_current_user(
 
 
 def require_admin(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
-    if str(current_user.get("role") or "User") != "Admin":
+    if normalize_required_role(str(current_user.get("role") or "User")) != "Admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
@@ -453,7 +423,7 @@ def require_admin(current_user: Dict[str, Any] = Depends(get_current_user)) -> D
 
 
 def require_admin_or_manager(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
-    if str(current_user.get("role") or "User") not in {"Admin", "Manager"}:
+    if normalize_required_role(str(current_user.get("role") or "User")) not in {"Admin", "Manager"}:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin or Manager access required",
@@ -677,10 +647,11 @@ def ensure_seed_data() -> Dict[str, int]:
     if not resources_response.data:
         seed_rows = []
         for resource in DEFAULT_RESOURCES:
-            department = department_lookup.get(str(resource["department"]).lower())
-            if not department:
+            department_name = resource.get("department")
+            department = department_lookup.get(str(department_name).strip().lower()) if department_name else None
+            if department_name and not department:
                 continue
-            department_id = department.get("id")
+            department_id = department.get("id") if department else None
             seed_rows.append(
                 {
                     "title": resource["title"],
@@ -978,12 +949,12 @@ def create_module(payload: ResourceCreate, current_user: Dict[str, Any] = Depend
 
 
 @app.put("/api/modules/{module_id}")
-def update_module(module_id: str, payload: ResourceUpdate, current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+def update_module(module_id: str, payload: ResourceUpdate, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
     return update_resource(module_id, payload, current_user)
 
 
 @app.delete("/api/modules/{module_id}")
-def delete_module(module_id: str, current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, str]:
+def delete_module(module_id: str, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, str]:
     return delete_resource(module_id, current_user)
 
 
@@ -1051,7 +1022,7 @@ def unregister_push_tokens(current_user: Dict[str, Any] = Depends(get_current_us
 
 
 @app.get("/api/audit-logs")
-def get_audit_logs(current_user: Dict[str, Any] = Depends(require_admin)) -> List[Dict[str, Any]]:
+def get_audit_logs(current_user: Dict[str, Any] = Depends(require_admin_or_manager)) -> List[Dict[str, Any]]:
     try:
         response = (
             get_supabase()
@@ -1104,7 +1075,8 @@ def create_resource(payload: ResourceCreate, current_user: Dict[str, Any] = Depe
 
 
 @app.put("/api/admin/resources/{resource_id}")
-def update_resource(resource_id: str, payload: ResourceUpdate, current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+def update_resource(resource_id: str, payload: ResourceUpdate, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
+    require_admin(current_user)
     supabase = get_supabase()
     normalized_resource_id = ensure_valid_backend_id(resource_id, "Resource ID")
     data = normalize_resource_payload(payload.model_dump(exclude_none=True))
@@ -1121,9 +1093,6 @@ def update_resource(resource_id: str, payload: ResourceUpdate, current_user: Dic
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Resource lookup failed: {exc}") from exc
     if not existing_response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
-    existing_resource = existing_response.data[0]
-    requested_role = data.get("viewing_level")
-    require_resource_management_access(current_user, existing_resource, requested_role)
 
     if "title" in data:
         ensure_unique_module_title(supabase, str(data["title"]), excluded_id=normalized_resource_id)
@@ -1149,7 +1118,8 @@ def update_resource(resource_id: str, payload: ResourceUpdate, current_user: Dic
 
 
 @app.delete("/api/admin/resources/{resource_id}")
-def delete_resource(resource_id: str, current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, str]:
+def delete_resource(resource_id: str, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, str]:
+    require_admin(current_user)
     supabase = get_supabase()
     normalized_resource_id = ensure_valid_backend_id(resource_id, "Resource ID")
     try:
@@ -1164,7 +1134,6 @@ def delete_resource(resource_id: str, current_user: Dict[str, Any] = Depends(get
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Resource lookup failed: {exc}") from exc
     if not existing_response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
-    require_resource_management_access(current_user, existing_response.data[0])
 
     try:
         response = supabase.table("resources").delete().eq("id", normalized_resource_id).execute()
@@ -1194,12 +1163,12 @@ def create_item(payload: ResourceCreate, current_user: Dict[str, Any] = Depends(
 
 
 @app.put("/api/admin/items/{item_id}")
-def update_item(item_id: str, payload: ResourceUpdate, current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+def update_item(item_id: str, payload: ResourceUpdate, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
     return update_resource(item_id, payload, current_user)
 
 
 @app.delete("/api/admin/items/{item_id}")
-def delete_item(item_id: str, current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, str]:
+def delete_item(item_id: str, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, str]:
     return delete_resource(item_id, current_user)
 
 
