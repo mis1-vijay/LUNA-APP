@@ -52,9 +52,8 @@ export async function getAccessToken(): Promise<string | null> {
 
 export async function signIn(employeeId: string, password: string): Promise<AuthResult> {
   const normalizedEmployeeId = employeeId.trim();
-  const normalizedPassword = password.trim();
 
-  if (!normalizedEmployeeId || !normalizedPassword) {
+  if (!normalizedEmployeeId || !password.trim()) {
     return {
       success: false,
       message: 'Enter both employee ID and password.',
@@ -80,7 +79,7 @@ export async function signIn(employeeId: string, password: string): Promise<Auth
       },
       body: JSON.stringify({
         employee_id: normalizedEmployeeId,
-        password: normalizedPassword,
+        password,
       }),
       signal: controller.signal,
     });
