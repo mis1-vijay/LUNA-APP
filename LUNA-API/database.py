@@ -17,11 +17,12 @@ def get_supabase() -> Client:
 
     if supabase is None:
         current_url = os.getenv("SUPABASE_URL")
-        current_key = os.getenv("SUPABASE_KEY")
+        current_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY")
 
         if not current_url or not current_key:
             raise RuntimeError(
-                "Missing required environment variables: SUPABASE_URL and SUPABASE_KEY. "
+                "Missing required environment variables: SUPABASE_URL and SUPABASE_SERVICE_KEY "
+                "(or SUPABASE_KEY). "
                 "Set them in the environment or the LUNA-API/.env file."
             )
         supabase = create_client(current_url, current_key)

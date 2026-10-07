@@ -1,4 +1,7 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import Constants from 'expo-constants';
+import * as Notifications from 'expo-notifications';
+import { Alert, Platform } from 'react-native';
 import {
   clearSession,
   loadStoredSession,
@@ -11,9 +14,21 @@ import {
   deleteAdminUser as deleteAdminUserRemote,
   fetchAdminUsers,
   fetchWorkspaceSettings,
+  registerPushToken,
   saveWorkspaceSettings,
+  unregisterPushTokens,
   updateAdminUser as updateAdminUserRemote,
 } from '../services/portalApi';
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: false,
+    shouldShowBanner: false,
+    shouldShowList: false,
+    shouldPlaySound: false,
+    shouldSetBadge: false,
+  }),
+});
 
 export type AdminManagedUser = {
   id: string;
@@ -127,6 +142,65 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     void persistWorkspace();
   }, [favorites, customModules, isAuthenticated, hasLoadedWorkspace, user]);
 
+  useEffect(() => {
+    if (!isAuthenticated || !user || Platform.OS === 'web') {
+      return;
+    }
+
+    let active = true;
+    const receivedSubscription = Notifications.addNotificationReceivedListener((notification) => {
+      const { title, body } = notification.request.content;
+      Alert.alert(title ?? 'LUNA', body ?? 'You have a new portal notification.');
+    });
+    const responseSubscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      const { title, body } = response.notification.request.content;
+      Alert.alert(title ?? 'LUNA', body ?? 'You opened a portal notification.');
+    });
+
+    const registerDevice = async () => {
+      if (Platform.OS === 'web') {
+        return;
+      }
+
+      try {
+        if (Platform.OS === 'android') {
+          await Notifications.setNotificationChannelAsync('portal-updates', {
+            name: 'Portal updates',
+            importance: Notifications.AndroidImportance.DEFAULT,
+          });
+        }
+
+        let permission = await Notifications.getPermissionsAsync();
+        if (!permission.granted) {
+          permission = await Notifications.requestPermissionsAsync();
+        }
+        if (!permission.granted) {
+          return;
+        }
+
+        const projectId = Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
+        if (!projectId) {
+          throw new Error('Expo push notifications require an EAS project ID.');
+        }
+
+        const token = await Notifications.getExpoPushTokenAsync({ projectId });
+        if (active) {
+          await registerPushToken(token.data);
+        }
+      } catch (error) {
+        console.warn('Failed to register Expo push notifications', error);
+      }
+    };
+
+    void registerDevice();
+
+    return () => {
+      active = false;
+      receivedSubscription.remove();
+      responseSubscription.remove();
+    };
+  }, [isAuthenticated, user]);
+
   const login = async (employeeId: string, password: string) => {
     const result = await signIn(employeeId, password);
 
@@ -142,6 +216,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = async () => {
+    if (isAuthenticated) {
+      try {
+        await unregisterPushTokens();
+      } catch (error) {
+        console.warn('Failed to unregister Expo push notifications during logout', error);
+      }
+    }
     setUser(null);
     setRoleState('User');
     setIsAuthenticated(false);

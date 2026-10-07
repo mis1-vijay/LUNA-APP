@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -30,6 +32,7 @@ from models import (
     PasswordResetConfirm,
     PasswordResetRequest,
     ProfileUpdate,
+    PushTokenRegistration,
     ResourceCreate,
     ResourceResponse,
     ResourceUpdate,
@@ -74,6 +77,8 @@ JWT_EXPIRATION_MINUTES = 60 * 8
 PASSWORD_RESET_EXPIRATION_MINUTES = 10
 PASSWORD_RESET_RESEND_SECONDS = 60
 PASSWORD_RESET_MAX_ATTEMPTS = 5
+EXPO_PUSH_SEND_URL = "https://exp.host/--/api/v2/push/send"
+EXPO_PUSH_BATCH_SIZE = 100
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -200,6 +205,107 @@ def get_user_by_employee_id(employee_id: str) -> Optional[Dict[str, Any]]:
     if not response.data:
         return None
     return response.data[0]
+
+
+def record_audit_log(
+    supabase: Any,
+    current_user: Dict[str, Any],
+    action: str,
+    target_type: str,
+    target_id: Optional[str] = None,
+    details: Optional[Dict[str, Any]] = None,
+) -> None:
+    entry = {
+        "actor_employee_id": str(current_user.get("employee_id") or ""),
+        "actor_name": str(current_user.get("name") or current_user.get("employee_id") or "Admin"),
+        "action": action,
+        "target_type": target_type,
+        "target_id": target_id,
+        "details": details or {},
+    }
+    try:
+        supabase.table("audit_logs").insert(entry).execute()
+    except Exception:
+        logger.exception("Administrative action could not be written to audit logs")
+
+
+def send_resource_push_notification(supabase: Any, resource: Dict[str, Any]) -> None:
+    try:
+        response = supabase.table("user_push_tokens").select("expo_push_token").execute()
+        tokens = sorted(
+            {
+                str(row["expo_push_token"])
+                for row in response.data or []
+                if isinstance(row, dict) and row.get("expo_push_token")
+            }
+        )
+    except Exception:
+        logger.exception("Resource was created, but registered push tokens could not be loaded")
+        return
+
+    if not tokens:
+        return
+
+    access_token = os.getenv("EXPO_ACCESS_TOKEN", "").strip()
+    invalid_tokens: List[str] = []
+    for start in range(0, len(tokens), EXPO_PUSH_BATCH_SIZE):
+        messages = [
+            {
+                "to": token,
+                "title": "New portal resource",
+                "body": str(resource.get("title") or "A new resource is available"),
+                "data": {"resource_id": str(resource.get("id") or "")},
+                "sound": "default",
+                "channelId": "portal-updates",
+            }
+            for token in tokens[start : start + EXPO_PUSH_BATCH_SIZE]
+        ]
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        if access_token:
+            headers["Authorization"] = f"Bearer {access_token}"
+        request = Request(
+            EXPO_PUSH_SEND_URL,
+            data=json.dumps(messages).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=10) as result:
+                payload = json.loads(result.read().decode("utf-8"))
+        except (URLError, TimeoutError, OSError, ValueError):
+            logger.exception("Resource was created, but Expo push delivery could not be requested")
+            continue
+
+        if not isinstance(payload, dict):
+            logger.error("Expo push service returned a non-object response")
+            continue
+        tickets = payload.get("data", [])
+        if not isinstance(tickets, list):
+            logger.error("Expo push service returned an invalid ticket response")
+            continue
+
+        batch_tokens = tokens[start : start + EXPO_PUSH_BATCH_SIZE]
+        if len(tickets) != len(batch_tokens):
+            logger.error("Expo returned %s push tickets for a batch of %s", len(tickets), len(batch_tokens))
+        for token, ticket in zip(batch_tokens, tickets):
+            if not isinstance(ticket, dict):
+                logger.error("Expo returned an invalid push ticket")
+                continue
+            details = ticket.get("details")
+            if (
+                ticket.get("status") == "error"
+                and isinstance(details, dict)
+                and details.get("error") == "DeviceNotRegistered"
+            ):
+                invalid_tokens.append(token)
+            elif ticket.get("status") == "error":
+                logger.error("Expo push was rejected for a registered device: %s", ticket.get("message"))
+
+    if invalid_tokens:
+        try:
+            supabase.table("user_push_tokens").delete().in_("expo_push_token", invalid_tokens).execute()
+        except Exception:
+            logger.exception("Unable to remove invalid Expo push tokens")
 
 
 def serialize_jsonb_value(value: Any) -> Any:
@@ -876,6 +982,61 @@ def get_notifications(current_user: Dict[str, Any] = Depends(get_current_user)) 
     ]
 
 
+@app.post("/api/push-tokens")
+def register_push_token(
+    payload: PushTokenRegistration,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, str]:
+    try:
+        get_supabase().table("user_push_tokens").upsert(
+            {
+                "employee_id": str(current_user["employee_id"]),
+                "expo_push_token": payload.expo_push_token,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            on_conflict="expo_push_token",
+        ).execute()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Push token registration is unavailable. Apply the push and audit migration and retry.",
+        ) from exc
+    return {"status": "registered"}
+
+
+@app.delete("/api/push-tokens")
+def unregister_push_tokens(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, str]:
+    try:
+        get_supabase().table("user_push_tokens").delete().eq(
+            "employee_id", str(current_user["employee_id"])
+        ).execute()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Push token removal is unavailable. Apply the push and audit migration and retry.",
+        ) from exc
+    return {"status": "unregistered"}
+
+
+@app.get("/api/audit-logs")
+def get_audit_logs(current_user: Dict[str, Any] = Depends(require_admin)) -> List[Dict[str, Any]]:
+    try:
+        response = (
+            get_supabase()
+            .table("audit_logs")
+            .select("id,actor_employee_id,actor_name,action,target_type,target_id,details,created_at")
+            .order("created_at", desc=True)
+            .limit(200)
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Audit logs are unavailable. Apply the push and audit migration and retry.",
+        ) from exc
+    return response.data or []
+
+
 @app.post("/api/admin/resources", status_code=status.HTTP_201_CREATED)
 def create_resource(payload: ResourceCreate, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
     supabase = get_supabase()
@@ -898,6 +1059,15 @@ def create_resource(payload: ResourceCreate, current_user: Dict[str, Any] = Depe
     except Exception:
         logger.exception("Resource was created, but its notification could not be stored")
 
+    record_audit_log(
+        supabase,
+        current_user,
+        "resource_created",
+        "resource",
+        str(created_resource.get("id") or ""),
+        {"title": str(created_resource.get("title") or data["title"])},
+    )
+    send_resource_push_notification(supabase, created_resource)
     return created_resource
 
 
@@ -919,6 +1089,14 @@ def update_resource(resource_id: str, payload: ResourceUpdate, current_user: Dic
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Resource update failed: {exc}") from exc
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
+    record_audit_log(
+        supabase,
+        current_user,
+        "resource_updated",
+        "resource",
+        normalized_resource_id,
+        {"changed_fields": sorted(data.keys()), "title": str(response.data[0].get("title") or "")},
+    )
     return response.data[0]
 
 
@@ -932,6 +1110,14 @@ def delete_resource(resource_id: str, current_user: Dict[str, Any] = Depends(req
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Resource deletion failed: {exc}") from exc
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
+    record_audit_log(
+        supabase,
+        current_user,
+        "resource_deleted",
+        "resource",
+        normalized_resource_id,
+        {"title": str(response.data[0].get("title") or "")},
+    )
     return {"status": "deleted", "id": normalized_resource_id}
 
 
@@ -996,6 +1182,14 @@ def create_user(payload: UserCreate, current_user: Dict[str, Any] = Depends(requ
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"User creation failed: {exc}") from exc
     if not response.data:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="User creation failed")
+    record_audit_log(
+        supabase,
+        current_user,
+        "user_created",
+        "user",
+        payload.employee_id,
+        {"name": payload.name, "role": payload.role},
+    )
     return response.data[0]
 
 
@@ -1020,6 +1214,19 @@ def update_user(employee_id: str, payload: UserUpdate, current_user: Dict[str, A
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"User update failed: {exc}") from exc
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    record_audit_log(
+        supabase,
+        current_user,
+        "user_updated",
+        "user",
+        employee_id,
+        {
+            "changed_fields": sorted(
+                "password" if field == "password_hash" else field
+                for field in data
+            )
+        },
+    )
     return response.data[0]
 
 
@@ -1032,4 +1239,5 @@ def delete_user(employee_id: str, current_user: Dict[str, Any] = Depends(require
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"User deletion failed: {exc}") from exc
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    record_audit_log(supabase, current_user, "user_deleted", "user", employee_id)
     return {"status": "deleted", "employee_id": employee_id}

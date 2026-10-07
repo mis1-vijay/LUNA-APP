@@ -485,6 +485,31 @@ export async function fetchAdminResources() {
   return requestBackend<AdminResourceRecord[]>('/api/admin/resources', 'GET');
 }
 
+export type AuditLog = {
+  id: string;
+  actor_employee_id: string;
+  actor_name: string;
+  action: string;
+  target_type: string;
+  target_id: string | null;
+  details: Record<string, unknown>;
+  created_at: string;
+};
+
+export async function registerPushToken(expoPushToken: string) {
+  return requestBackend<{ status: string }>('/api/push-tokens', 'POST', {
+    expo_push_token: expoPushToken,
+  });
+}
+
+export async function unregisterPushTokens() {
+  return requestBackend<{ status: string }>('/api/push-tokens', 'DELETE');
+}
+
+export async function fetchAuditLogs() {
+  return requestBackend<AuditLog[]>('/api/audit-logs', 'GET');
+}
+
 export async function fetchAdminDepartments() {
   return requestBackend<Array<{ id: string; name: string; sort_order: number }>>('/api/admin/departments', 'GET');
 }

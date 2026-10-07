@@ -1,4 +1,5 @@
 import unittest
+import json
 from datetime import datetime, timedelta, timezone
 import secrets
 from types import SimpleNamespace
@@ -14,15 +15,19 @@ from main import (
     hash_reset_code,
     has_access,
     get_notifications,
+    get_audit_logs,
     notification_role_allows,
     normalize_resource_payload,
     fetch_visible_resources,
     visible_resource_levels,
+    register_push_token,
     request_password_reset,
     require_admin,
     reset_password,
+    send_resource_push_notification,
+    update_user,
 )
-from models import PasswordResetConfirm, PasswordResetRequest, ResourceCreate
+from models import PasswordResetConfirm, PasswordResetRequest, PushTokenRegistration, ResourceCreate, UserUpdate
 
 
 class BackendContractTests(unittest.TestCase):
@@ -192,13 +197,18 @@ class BackendContractTests(unittest.TestCase):
         supabase = MagicMock()
         resources_table = MagicMock()
         notifications_table = MagicMock()
+        audit_table = MagicMock()
+        push_tokens_table = MagicMock()
         supabase.table.side_effect = lambda table_name: {
             "resources": resources_table,
             "notifications": notifications_table,
+            "audit_logs": audit_table,
+            "user_push_tokens": push_tokens_table,
         }[table_name]
         resources_table.select.return_value.execute.return_value.data = []
         inserted_resource = {"id": "a658e481-c235-4cc5-b42a-3773bd68d2ce", "title": "Example"}
         resources_table.insert.return_value.execute.return_value.data = [inserted_resource]
+        push_tokens_table.select.return_value.execute.return_value.data = []
 
         payload = ResourceCreate(
             title="Example",
@@ -227,6 +237,83 @@ class BackendContractTests(unittest.TestCase):
                 "is_read": False,
             }
         )
+        audit_table.insert.assert_called_once_with(
+            {
+                "actor_employee_id": "",
+                "actor_name": "Admin",
+                "action": "resource_created",
+                "target_type": "resource",
+                "target_id": inserted_resource["id"],
+                "details": {"title": "Example"},
+            }
+        )
+
+    def test_push_token_registration_is_scoped_to_authenticated_user(self):
+        supabase = MagicMock()
+        with patch("main.get_supabase", return_value=supabase):
+            result = register_push_token(
+                PushTokenRegistration(expo_push_token="ExpoPushToken[0123456789abcdef012345]"),
+                {"employee_id": "EMP123"},
+            )
+
+        self.assertEqual(result, {"status": "registered"})
+        supabase.table.assert_called_once_with("user_push_tokens")
+        supabase.table.return_value.upsert.assert_called_once()
+        registration = supabase.table.return_value.upsert.call_args.args[0]
+        self.assertEqual(registration["employee_id"], "EMP123")
+        self.assertEqual(registration["expo_push_token"], "ExpoPushToken[0123456789abcdef012345]")
+
+    def test_resource_push_is_sent_to_every_registered_token(self):
+        tokens = [
+            "ExpoPushToken[0123456789abcdef012345]",
+            "ExponentPushToken[abcdef0123456789abcdef]",
+        ]
+        supabase = MagicMock()
+        supabase.table.return_value.select.return_value.execute.return_value.data = [
+            {"expo_push_token": token} for token in tokens
+        ]
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"data":[{"status":"ok"},{"status":"ok"}]}'
+
+        with patch("main.urlopen", return_value=response) as send_request:
+            send_resource_push_notification(supabase, {"id": "resource-1", "title": "New module"})
+
+        request = send_request.call_args.args[0]
+        messages = json.loads(request.data.decode("utf-8"))
+        self.assertEqual([message["to"] for message in messages], sorted(tokens))
+        self.assertTrue(all(message["body"] == "New module" for message in messages))
+        send_request.assert_called_once_with(request, timeout=10)
+
+    def test_audit_log_endpoint_is_admin_only_and_returns_recent_rows(self):
+        route = next(route for route in app.routes if route.path == "/api/audit-logs")
+        dependencies = [dependency.call for dependency in route.dependant.dependencies]
+        self.assertIn(require_admin, dependencies)
+
+        expected_logs = [{"id": "log-1", "action": "resource_created"}]
+        supabase = MagicMock()
+        supabase.table.return_value.select.return_value.order.return_value.limit.return_value.execute.return_value.data = expected_logs
+        with patch("main.get_supabase", return_value=supabase):
+            result = get_audit_logs({"role": "Admin"})
+
+        self.assertEqual(result, expected_logs)
+        supabase.table.assert_called_once_with("audit_logs")
+
+    def test_admin_user_updates_are_audited_without_recording_password_values(self):
+        supabase = MagicMock()
+        with (
+            patch("main.get_supabase", return_value=supabase),
+            patch("main.update_user_record", return_value=SimpleNamespace(data=[{"employee_id": "EMP123"}])),
+        ):
+            result = update_user(
+                "EMP123",
+                UserUpdate(name="Updated name", password="NewSecurePassword123"),
+                {"employee_id": "ADMIN1", "name": "Portal Admin"},
+            )
+
+        self.assertEqual(result, {"employee_id": "EMP123"})
+        audit_details = supabase.table.return_value.insert.call_args.args[0]["details"]
+        self.assertEqual(audit_details["changed_fields"], ["name", "password"])
+        self.assertNotIn("NewSecurePassword123", str(audit_details))
 
     @patch.dict("os.environ", {"JWT_SECRET_KEY": secrets.token_urlsafe(32)})
     @patch("main.send_password_reset_email")

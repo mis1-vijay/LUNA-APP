@@ -9,6 +9,7 @@ export type RootStackParamList = {
     url?: string;
   };
   AdminConsole: undefined;
+  SystemAudit: undefined;
 };
 
 export type TabParamList = {

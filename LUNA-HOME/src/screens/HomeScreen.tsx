@@ -158,8 +158,11 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
         role: item.access[0] ?? 'User',
         category: 'Report' as const,
         url: item.link,
-      }))].filter((item) => canAccessRole(role, item.role ?? 'User')),
-    [customModules, dynamicReports, role],
+      }))].filter((item) => {
+        const isSystemAudit = item.title.trim().toLowerCase() === 'system audit';
+        return (!isSystemAudit || isAdmin) && canAccessRole(role, item.role ?? 'User');
+      }),
+    [customModules, dynamicReports, isAdmin, role],
   );
 
   const visibleAdminResources = useMemo(
@@ -419,7 +422,16 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
                 accentColor={item.accent}
                 isFavorite={isFavorite(`Report:${item.title}`)}
                 onFavoritePress={() => toggleFavorite(`Report:${item.title}`)}
-                onPress={() => handleModulePress(item.title, item.url)}
+                onPress={() => {
+                  if (item.title.trim().toLowerCase() === 'system audit') {
+                    if (isAdmin) {
+                      navigation.navigate('SystemAudit');
+                    }
+                    return;
+                  }
+
+                  void handleModulePress(item.title, item.url);
+                }}
               />
               {isAdmin ? (
                 <View style={styles.adminActionRow}>

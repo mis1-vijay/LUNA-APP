@@ -12,6 +12,7 @@ import ProfileScreen from './src/screens/ProfileScreen';
 import DepartmentWorkspaceScreen from './src/screens/DepartmentWorkspaceScreen';
 import WebAppDetailScreen from './src/screens/WebAppDetailScreen';
 import AdminConsoleScreen from './src/screens/AdminConsoleScreen';
+import SystemAuditScreen from './src/screens/SystemAuditScreen';
 import { AppProvider } from './src/context/AppContext';
 import { RootStackParamList, TabParamList } from './src/types';
 
@@ -75,6 +76,7 @@ export default function App() {
               <Stack.Screen name="DepartmentWorkspace" component={DepartmentWorkspaceScreen} />
               <Stack.Screen name="WebAppDetail" component={WebAppDetailScreen} />
               <Stack.Screen name="AdminConsole" component={AdminConsoleScreen} />
+              <Stack.Screen name="SystemAudit" component={SystemAuditScreen} />
             </Stack.Navigator>
           </NavigationContainer>
         </SafeAreaView>

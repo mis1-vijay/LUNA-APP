@@ -113,6 +113,15 @@ class NotificationResponse(BaseModel):
     is_read: bool = False
 
 
+class PushTokenRegistration(BaseModel):
+    expo_push_token: str = Field(
+        ...,
+        min_length=20,
+        max_length=200,
+        pattern=r"^(Expo|Exponent)PushToken\[[^\]]+\]$",
+    )
+
+
 class DepartmentResponse(BaseModel):
     id: UUID
     name: str
