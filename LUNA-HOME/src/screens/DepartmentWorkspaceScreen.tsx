@@ -26,32 +26,52 @@ import { RootStackParamList } from '../types';
 
 type DepartmentWorkspaceScreenProps = NativeStackScreenProps<RootStackParamList, 'DepartmentWorkspace'>;
 
-const ROLE_RANK: Record<string, number> = { user: 1, supervisor: 2, manager: 3, admin: 4 };
-const getRoleRank = (role: string) => ROLE_RANK[role.trim().toLowerCase()] ?? 0;
-const getRequiredRole = (access: string[]) =>
-  (['User', 'Supervisor', 'Manager', 'Admin'] as const).find((accessLevel) => access.includes(accessLevel)) ?? 'User';
+const ROLE_RANKS: Record<string, number> = { user: 1, supervisor: 2, manager: 3, admin: 4 };
+const getRoleRank = (role: string) => ROLE_RANKS[role.trim().toLowerCase()] ?? 0;
+const getRequiredRole = (access: string[]) => {
+  let highestRole = 'User';
+  let highestRank = ROLE_RANKS.user;
+  access.forEach((role) => {
+    const normalizedRole = role.trim().toLowerCase();
+    const rank = ROLE_RANKS[normalizedRole] ?? 0;
+    if (rank > highestRank) {
+      highestRank = rank;
+      highestRole = normalizedRole.charAt(0).toUpperCase() + normalizedRole.slice(1);
+    }
+  });
+  return highestRole;
+};
 const isBackendResourceId = (id: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
-const canManageResource = (role: string, access: string[]) => {
-  if (
-    role.trim().toLowerCase() === 'manager' &&
-    access.some((requiredRole) => requiredRole.trim().toLowerCase() === 'admin')
-  ) {
-    return false;
-  }
+const canManageResource = (userRole: string, resourceAccessLevels: string | string[]) => {
+  if (!userRole) return false;
+  const normalizedUserRole = userRole.toLowerCase().trim();
+  const userRank = ROLE_RANKS[normalizedUserRole] || 0;
 
-  return access.length > 0 &&
-    getRoleRank(role) >=
-      access.reduce((highestRank, requiredRole) => Math.max(highestRank, ROLE_RANK[requiredRole.trim().toLowerCase()] ?? Infinity), 0);
+  const accessArray = Array.isArray(resourceAccessLevels) ? resourceAccessLevels : [resourceAccessLevels];
+
+  let requiredRank = 0;
+  accessArray.forEach((role) => {
+    if (!role) return;
+    const rank = ROLE_RANKS[role.toLowerCase().trim()] || 0;
+    if (rank > requiredRank) requiredRank = rank;
+  });
+
+  return userRank > 0 && requiredRank > 0 && userRank >= requiredRank;
 };
-const canViewResource = (role: string, access: string[]) =>
-  access.some((requiredRole) => getRoleRank(role) >= (ROLE_RANK[requiredRole.trim().toLowerCase()] ?? Infinity)) ||
-  (role.trim().toLowerCase() === 'manager' && access.some((requiredRole) => requiredRole.trim().toLowerCase() === 'admin'));
+const canViewResource = (role: string, access: string[]) => {
+  const userRank = getRoleRank(role);
+  const requiredRank = access.reduce(
+    (highestRank, requiredRole) => Math.max(highestRank, ROLE_RANKS[requiredRole.trim().toLowerCase()] ?? 0),
+    0,
+  );
+  return userRank > 0 && requiredRank > 0 && userRank >= requiredRank;
+};
 
 export default function DepartmentWorkspaceScreen({ route, navigation }: DepartmentWorkspaceScreenProps) {
   const { department } = route.params;
   const { addCustomModule, removeCustomModule, customModules, role } = useAppContext();
-  const canManageResources = role === 'Admin';
+  const canManageResources = role.trim().toLowerCase() === 'admin';
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -374,7 +394,7 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
             <Text style={styles.accessLabel}>Viewing level</Text>
             <View style={styles.pillRow}>
               {(['User', 'Supervisor', 'Manager', 'Admin'] as const)
-                .filter((accessLevel) => getRoleRank(role) >= ROLE_RANK[accessLevel.toLowerCase()])
+                .filter((accessLevel) => getRoleRank(role) >= ROLE_RANKS[accessLevel.toLowerCase()])
                 .map((accessLevel) => (
                   <TouchableOpacity
                     key={accessLevel}

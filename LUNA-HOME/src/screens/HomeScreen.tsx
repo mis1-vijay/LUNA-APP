@@ -51,52 +51,55 @@ type ResourceFormState = {
   category: ResourceCategory;
 };
 
-const ROLE_RANK: Record<string, number> = { user: 1, employee: 1, supervisor: 2, manager: 3, admin: 4 };
+const ROLE_RANKS: Record<string, number> = { user: 1, supervisor: 2, manager: 3, admin: 4 };
 const ROLE_OPTIONS: PortalRoleLevel[] = ['User', 'Supervisor', 'Manager', 'Admin'];
 
-const getRequiredRole = (access: string[]) =>
-  ROLE_OPTIONS.find((candidate) => access.some((roleName) => roleName.trim().toLowerCase() === candidate.toLowerCase())) ?? 'User';
+const getRequiredRole = (access: string[]) => {
+  let highestRole: PortalRoleLevel = 'User';
+  let highestRank = ROLE_RANKS.user;
+  access.forEach((roleName) => {
+    const normalizedRole = roleName.trim().toLowerCase();
+    const rank = ROLE_RANKS[normalizedRole] ?? 0;
+    if (rank > highestRank) {
+      highestRank = rank;
+      highestRole = ROLE_OPTIONS.find((candidate) => candidate.toLowerCase() === normalizedRole) ?? highestRole;
+    }
+  });
+  return highestRole;
+};
 
 const canAccessRole = (currentRole: string | undefined, requiredRole?: string) => {
-  const currentRoleName = currentRole?.trim().toLowerCase() ?? 'user';
-  if (currentRoleName === 'admin') {
-    return true;
-  }
-
-  const target = requiredRole?.trim().toLowerCase() || 'user';
-  const current = ROLE_RANK[currentRoleName] ?? 0;
-  const needed = ROLE_RANK[target] ?? 0;
+  const current = ROLE_RANKS[currentRole?.trim().toLowerCase() ?? ''] ?? 0;
+  const needed = ROLE_RANKS[requiredRole?.trim().toLowerCase() || 'user'] ?? 0;
   return current > 0 && needed > 0 && current >= needed;
 };
 
-const canViewRole = (currentRole: string | undefined, requiredRole?: string) =>
-  canAccessRole(currentRole, requiredRole) ||
-  (currentRole?.trim().toLowerCase() === 'manager' && requiredRole?.trim().toLowerCase() === 'admin');
+const canAccessRoles = (currentRole: string | undefined, requiredRoles: string[]) => {
+  const currentRank = ROLE_RANKS[currentRole?.trim().toLowerCase() ?? ''] ?? 0;
+  const requiredRank = requiredRoles.reduce(
+    (highestRank, requiredRole) => Math.max(highestRank, ROLE_RANKS[requiredRole.trim().toLowerCase()] ?? 0),
+    0,
+  );
+  return currentRank > 0 && requiredRank > 0 && currentRank >= requiredRank;
+};
 
-const canManageResource = (currentRole: string | undefined, requiredRole?: string | string[]) => {
-  if (Array.isArray(requiredRole) && requiredRole.length === 0) {
-    return false;
-  }
+const canViewRole = canAccessRole;
 
-  const resourceRole: string | undefined = Array.isArray(requiredRole)
-    ? requiredRole.reduce<string | undefined>(
-      (highestRole, accessRole) =>
-        (ROLE_RANK[accessRole.trim().toLowerCase()] ?? 0) >
-        (ROLE_RANK[highestRole?.trim().toLowerCase() ?? ''] ?? 0)
-          ? accessRole
-          : highestRole,
-      undefined,
-    )
-    : requiredRole;
+const canManageResource = (userRole: string | undefined, resourceAccessLevels: string | string[]) => {
+  if (!userRole) return false;
+  const normalizedUserRole = userRole.toLowerCase().trim();
+  const userRank = ROLE_RANKS[normalizedUserRole] || 0;
 
-  if (
-    currentRole?.trim().toLowerCase() === 'manager' &&
-    resourceRole?.trim().toLowerCase() === 'admin'
-  ) {
-    return false;
-  }
+  const accessArray = Array.isArray(resourceAccessLevels) ? resourceAccessLevels : [resourceAccessLevels];
 
-  return canAccessRole(currentRole, resourceRole);
+  let requiredRank = 0;
+  accessArray.forEach((role) => {
+    if (!role) return;
+    const rank = ROLE_RANKS[role.toLowerCase().trim()] || 0;
+    if (rank > requiredRank) requiredRank = rank;
+  });
+
+  return userRank > 0 && requiredRank > 0 && userRank >= requiredRank;
 };
 
 const isBackendResourceId = (id?: string): id is string =>
@@ -127,7 +130,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
   });
   const [savingResource, setSavingResource] = useState(false);
 
-  const isAdmin = role === 'Admin';
+  const isAdmin = role.trim().toLowerCase() === 'admin';
 
   const loadData = async () => {
     try {
@@ -167,7 +170,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
         accent: item.accent,
         access: item.access,
         url: item.link,
-      }))].filter((item) => item.access.some((accessRole) => canViewRole(role, accessRole))),
+      }))].filter((item) => canAccessRoles(role, item.access)),
     [customModules, dynamicWebApps, role],
   );
 
@@ -180,7 +183,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
         summary: item.subtitle,
         metrics: [{ label: 'Link', value: 'Open' }],
         access: item.access,
-      }))].filter((item) => item.access?.some((accessRole) => canAccessRole(role, accessRole)) ?? true),
+      }))].filter((item) => canAccessRoles(role, item.access ?? [])),
     [customModules, dynamicDepartments, role],
   );
 
@@ -197,7 +200,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
         url: item.link,
       }))].filter((item) => {
         const isSystemAudit = item.title.trim().toLowerCase() === 'system audit';
-        return (!isSystemAudit || isAdmin) && canViewRole(role, item.role ?? 'User');
+        return (!isSystemAudit || canViewRole(role, 'Admin')) && canViewRole(role, item.role ?? 'User');
       }),
     [customModules, dynamicReports, isAdmin, role],
   );
@@ -206,9 +209,9 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
     () =>
       [
         ...dynamicAdminResources,
-        ...(role === 'Admin' || role === 'Manager' ? [{ title: 'Admin Console', subtitle: 'View users and portal modules', meta: 'Admin' as const, accent: '#5e1232', role: 'Admin', category: 'Admin' as const }] : []),
+        ...(isAdmin || role.trim().toLowerCase() === 'manager' ? [{ title: 'Admin Console', subtitle: 'View users and portal modules', meta: 'Admin' as const, accent: '#5e1232', role: 'Admin', category: 'Admin' as const }] : []),
       ].filter((item) =>
-        (item.title === 'Admin Console' && role === 'Manager') || canViewRole(role, item.role ?? 'Admin'),
+        (item.title === 'Admin Console' && role.trim().toLowerCase() === 'manager') || canViewRole(role, item.role ?? 'Admin'),
       ),
     [dynamicAdminResources, isAdmin, role],
   );
@@ -219,7 +222,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
 
   const handleModulePress = async (label: string, link?: string) => {
     if (label === 'Admin Console') {
-      if (role === 'Admin' || role === 'Manager') {
+      if (role.trim().toLowerCase() === 'admin' || role.trim().toLowerCase() === 'manager') {
         navigation.navigate('AdminConsole');
       }
       return;
@@ -476,7 +479,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
                 onFavoritePress={() => toggleFavorite(`Report:${item.title}`)}
                 onPress={() => {
                   if (item.title.trim().toLowerCase() === 'system audit') {
-                    if (isAdmin) {
+                    if (canViewRole(role, 'Admin')) {
                       navigation.navigate('SystemAudit');
                     }
                     return;
