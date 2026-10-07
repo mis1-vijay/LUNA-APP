@@ -156,6 +156,14 @@ def has_access(user_role: str, required_role: Optional[str]) -> bool:
     return user_priority > 0 and required_priority > 0 and user_priority >= required_priority
 
 
+def can_view_resource(user_role: str, required_role: Optional[str]) -> bool:
+    normalized_user_role = normalize_required_role(user_role)
+    normalized_required_role = normalize_required_role(required_role)
+    return has_access(normalized_user_role, normalized_required_role) or (
+        normalized_user_role == "Manager" and normalized_required_role == "Admin"
+    )
+
+
 def visible_resource_levels(user_role: str) -> Optional[List[str]]:
     normalized_role = normalize_required_role(user_role)
     if normalized_role == "Admin":
@@ -164,7 +172,7 @@ def visible_resource_levels(user_role: str) -> Optional[List[str]]:
     return {
         "User": ["User"],
         "Supervisor": ["User", "Supervisor"],
-        "Manager": ["User", "Supervisor", "Manager"],
+        "Manager": ["User", "Supervisor", "Manager", "Admin"],
     }.get(normalized_role, ["User"])
 
 
@@ -179,7 +187,7 @@ def fetch_visible_resources(supabase: Any, user_role: str) -> List[Dict[str, Any
         resource
         for resource in resources
         if isinstance(resource, dict)
-        and has_access(
+        and can_view_resource(
             normalized_user_role,
             next(
                 (
@@ -191,6 +199,30 @@ def fetch_visible_resources(supabase: Any, user_role: str) -> List[Dict[str, Any
             ),
         )
     ]
+
+
+def require_resource_management_access(
+    current_user: Dict[str, Any],
+    resource: Dict[str, Any],
+    requested_role: Optional[str] = None,
+) -> None:
+    user_role = normalize_required_role(str(current_user.get("role") or "User"))
+    resource_role = next(
+        (
+            str(resource[field])
+            for field in ("viewing_level", "access_level", "required_role", "role")
+            if isinstance(resource.get(field), str) and resource[field].strip()
+        ),
+        None,
+    )
+    if not has_access(user_role, resource_role):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient access to manage this resource")
+
+    if requested_role is not None and not has_access(user_role, requested_role):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You cannot assign this resource to a higher access level",
+        )
 
 
 def notification_role_allows(user_role: str, target_role_level: str) -> bool:
@@ -946,12 +978,12 @@ def create_module(payload: ResourceCreate, current_user: Dict[str, Any] = Depend
 
 
 @app.put("/api/modules/{module_id}")
-def update_module(module_id: str, payload: ResourceUpdate, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
+def update_module(module_id: str, payload: ResourceUpdate, current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
     return update_resource(module_id, payload, current_user)
 
 
 @app.delete("/api/modules/{module_id}")
-def delete_module(module_id: str, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, str]:
+def delete_module(module_id: str, current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, str]:
     return delete_resource(module_id, current_user)
 
 
@@ -1072,10 +1104,26 @@ def create_resource(payload: ResourceCreate, current_user: Dict[str, Any] = Depe
 
 
 @app.put("/api/admin/resources/{resource_id}")
-def update_resource(resource_id: str, payload: ResourceUpdate, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
+def update_resource(resource_id: str, payload: ResourceUpdate, current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
     supabase = get_supabase()
     normalized_resource_id = ensure_valid_backend_id(resource_id, "Resource ID")
     data = normalize_resource_payload(payload.model_dump(exclude_none=True))
+
+    try:
+        existing_response = (
+            supabase.table("resources")
+            .select("*")
+            .eq("id", normalized_resource_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Resource lookup failed: {exc}") from exc
+    if not existing_response.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
+    existing_resource = existing_response.data[0]
+    requested_role = data.get("viewing_level")
+    require_resource_management_access(current_user, existing_resource, requested_role)
 
     if "title" in data:
         ensure_unique_module_title(supabase, str(data["title"]), excluded_id=normalized_resource_id)
@@ -1101,9 +1149,23 @@ def update_resource(resource_id: str, payload: ResourceUpdate, current_user: Dic
 
 
 @app.delete("/api/admin/resources/{resource_id}")
-def delete_resource(resource_id: str, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, str]:
+def delete_resource(resource_id: str, current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, str]:
     supabase = get_supabase()
     normalized_resource_id = ensure_valid_backend_id(resource_id, "Resource ID")
+    try:
+        existing_response = (
+            supabase.table("resources")
+            .select("*")
+            .eq("id", normalized_resource_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Resource lookup failed: {exc}") from exc
+    if not existing_response.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
+    require_resource_management_access(current_user, existing_response.data[0])
+
     try:
         response = supabase.table("resources").delete().eq("id", normalized_resource_id).execute()
     except Exception as exc:
@@ -1132,12 +1194,12 @@ def create_item(payload: ResourceCreate, current_user: Dict[str, Any] = Depends(
 
 
 @app.put("/api/admin/items/{item_id}")
-def update_item(item_id: str, payload: ResourceUpdate, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
+def update_item(item_id: str, payload: ResourceUpdate, current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
     return update_resource(item_id, payload, current_user)
 
 
 @app.delete("/api/admin/items/{item_id}")
-def delete_item(item_id: str, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, str]:
+def delete_item(item_id: str, current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, str]:
     return delete_resource(item_id, current_user)
 
 

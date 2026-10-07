@@ -14,7 +14,9 @@ from main import (
     ensure_seed_data,
     hash_reset_code,
     has_access,
+    can_view_resource,
     get_notifications,
+    delete_resource,
     get_audit_logs,
     notification_role_allows,
     normalize_resource_payload,
@@ -26,6 +28,7 @@ from main import (
     reset_password,
     send_resource_push_notification,
     update_user,
+    update_resource,
 )
 from models import PasswordResetConfirm, PasswordResetRequest, PushTokenRegistration, ResourceCreate, UserUpdate
 
@@ -54,24 +57,33 @@ class BackendContractTests(unittest.TestCase):
             self.assertEqual(raised.exception.status_code, 403)
         self.assertEqual(require_admin({"role": "Admin"})["role"], "Admin")
 
-    def test_resource_mutation_routes_require_admin(self):
+    def test_resource_creation_is_admin_only_and_updates_use_authenticated_resource_access(self):
         mutation_routes = [
             route
             for route in app.routes
-            if route.path.startswith(("/api/admin/", "/api/modules"))
+            if route.path.startswith(("/api/admin/resources", "/api/admin/items", "/api/modules"))
             and route.methods.intersection({"POST", "PUT", "DELETE"})
         ]
         self.assertTrue(mutation_routes)
         for route in mutation_routes:
             with self.subTest(path=route.path):
                 dependencies = [dependency.call for dependency in route.dependant.dependencies]
-                self.assertIn(require_admin, dependencies)
+                if "POST" in route.methods:
+                    self.assertIn(require_admin, dependencies)
+                else:
+                    self.assertIn(main.get_current_user, dependencies)
+                    self.assertNotIn(require_admin, dependencies)
 
     def test_resource_visibility_levels_are_strictly_hierarchical(self):
         self.assertEqual(visible_resource_levels("User"), ["User"])
         self.assertEqual(visible_resource_levels("Supervisor"), ["User", "Supervisor"])
-        self.assertEqual(visible_resource_levels("Manager"), ["User", "Supervisor", "Manager"])
+        self.assertEqual(visible_resource_levels("Manager"), ["User", "Supervisor", "Manager", "Admin"])
         self.assertIsNone(visible_resource_levels("Admin"))
+
+    def test_managers_can_view_admin_resources_but_not_manage_them(self):
+        self.assertTrue(can_view_resource("Manager", "Admin"))
+        self.assertFalse(has_access("Manager", "Admin"))
+        self.assertFalse(can_view_resource("Supervisor", "Admin"))
 
     def test_resource_query_filters_database_by_viewing_level(self):
         supabase = MagicMock()
@@ -127,6 +139,7 @@ class BackendContractTests(unittest.TestCase):
                 "Mixed-case required role",
                 "Supervisor resource",
                 "Manager resource",
+                "Admin resource",
             },
             "Admin": {resource["title"] for resource in resources},
         }
@@ -145,6 +158,55 @@ class BackendContractTests(unittest.TestCase):
                         "Mixed-case required role",
                     }:
                         self.assertEqual(resource["department_id"], department_id)
+
+    def test_managers_can_update_lower_level_resources_but_cannot_promote_or_change_admin_resources(self):
+        resource_id = "a658e481-c235-4cc5-b42a-3773bd68d2ce"
+        resource_table = MagicMock()
+        audit_table = MagicMock()
+        supabase = MagicMock()
+        supabase.table.side_effect = lambda name: {
+            "resources": resource_table,
+            "audit_logs": audit_table,
+        }[name]
+        resource_table.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            {"id": resource_id, "title": "User resource", "viewing_level": "User"}
+        ]
+        updated_resource = {"id": resource_id, "title": "User resource", "viewing_level": "Manager"}
+        resource_table.update.return_value.eq.return_value.execute.return_value.data = [updated_resource]
+
+        with patch("main.get_supabase", return_value=supabase):
+            result = update_resource(
+                resource_id,
+                main.ResourceUpdate(viewing_level="Manager"),
+                {"role": "Manager", "employee_id": "MGR1"},
+            )
+        self.assertEqual(result, updated_resource)
+
+        with patch("main.get_supabase", return_value=supabase):
+            with self.assertRaises(HTTPException) as promoted:
+                update_resource(
+                    resource_id,
+                    main.ResourceUpdate(viewing_level="Admin"),
+                    {"role": "Manager", "employee_id": "MGR1"},
+                )
+        self.assertEqual(promoted.exception.status_code, 403)
+
+        resource_table.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            {"id": resource_id, "title": "Admin resource", "viewing_level": "Admin"}
+        ]
+        with patch("main.get_supabase", return_value=supabase):
+            with self.assertRaises(HTTPException) as admin_resource:
+                update_resource(
+                    resource_id,
+                    main.ResourceUpdate(title="Not allowed"),
+                    {"role": "Manager", "employee_id": "MGR1"},
+                )
+        self.assertEqual(admin_resource.exception.status_code, 403)
+        with patch("main.get_supabase", return_value=supabase):
+            with self.assertRaises(HTTPException) as admin_delete:
+                delete_resource(resource_id, {"role": "Manager", "employee_id": "MGR1"})
+        self.assertEqual(admin_delete.exception.status_code, 403)
+        resource_table.delete.assert_not_called()
 
     def test_notification_role_filter_is_strictly_hierarchical(self):
         self.assertTrue(notification_role_allows("Manager", "Manager"))

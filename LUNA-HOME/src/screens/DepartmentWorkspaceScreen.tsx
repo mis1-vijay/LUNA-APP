@@ -16,16 +16,29 @@ import Header from '../components/Header';
 import EmptyState from '../components/EmptyState';
 import ErrorState from '../components/ErrorState';
 import { useAppContext, type CustomModule } from '../context/AppContext';
-import { fetchDepartmentResources, type DashboardDepartmentResource } from '../services/portalApi';
+import {
+  deleteResourceRecord,
+  fetchDepartmentResources,
+  type DashboardDepartmentResource,
+  updateResourceRecord,
+} from '../services/portalApi';
 import { RootStackParamList } from '../types';
 
 type DepartmentWorkspaceScreenProps = NativeStackScreenProps<RootStackParamList, 'DepartmentWorkspace'>;
 
 const ROLE_RANK: Record<string, number> = { User: 1, Supervisor: 2, Manager: 3, Admin: 4 };
+const getRequiredRole = (access: string[]) =>
+  (['User', 'Supervisor', 'Manager', 'Admin'] as const).find((accessLevel) => access.includes(accessLevel)) ?? 'User';
+const isBackendResourceId = (id: string) =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+const canManageResource = (role: string, access: string[]) =>
+  access.some((requiredRole) => (ROLE_RANK[role] ?? 0) >= (ROLE_RANK[requiredRole] ?? Infinity));
+const canViewResource = (role: string, access: string[]) =>
+  canManageResource(role, access) || (role === 'Manager' && access.some((requiredRole) => requiredRole === 'Admin'));
 
 export default function DepartmentWorkspaceScreen({ route, navigation }: DepartmentWorkspaceScreenProps) {
   const { department } = route.params;
-  const { addCustomModule, customModules, role } = useAppContext();
+  const { addCustomModule, removeCustomModule, customModules, role } = useAppContext();
   const canManageResources = role === 'Admin';
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -36,6 +49,8 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
   const [newSubtitle, setNewSubtitle] = useState('');
   const [newLink, setNewLink] = useState('');
   const [newType, setNewType] = useState<'webApp' | 'report' | 'resource'>('resource');
+  const [newAccessLevel, setNewAccessLevel] = useState('User');
+  const [editingResource, setEditingResource] = useState<CustomModule | null>(null);
 
   useEffect(() => {
     let isCurrent = true;
@@ -77,11 +92,7 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
           ...resource,
           type: resource.type,
         })),
-      ].filter(
-        (module) =>
-          role === 'Admin' ||
-          module.access.some((requiredRole) => ROLE_RANK[role] >= (ROLE_RANK[requiredRole] ?? Infinity)),
-      ),
+      ].filter((module) => canViewResource(role, module.access)),
     [apiDepartmentResources, customModules, department, role],
   );
 
@@ -97,6 +108,40 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
     }
 
     try {
+      if (editingResource) {
+        if (isBackendResourceId(editingResource.id)) {
+          const type =
+            editingResource.type === 'webApp'
+              ? 'webapp'
+              : editingResource.type === 'resource'
+                ? 'module'
+                : editingResource.type;
+          await updateResourceRecord(editingResource.id, {
+            title: newTitle.trim(),
+            description: newSubtitle.trim() || 'Custom resource',
+            type,
+            url: newLink.trim(),
+            required_role: newAccessLevel,
+          });
+          await removeCustomModule(editingResource.id);
+          setReloadKey((current) => current + 1);
+        } else {
+          await addCustomModule({
+            ...editingResource,
+            title: newTitle.trim(),
+            subtitle: newSubtitle.trim() || 'Custom resource',
+            link: newLink.trim(),
+            access: [newAccessLevel],
+          });
+        }
+        setIsAddOpen(false);
+        setEditingResource(null);
+        setNewTitle('');
+        setNewSubtitle('');
+        setNewLink('');
+        return;
+      }
+
       const newModule: CustomModule = {
         id: `${newType}-${Date.now()}`,
         type: newType,
@@ -104,7 +149,7 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
         subtitle: newSubtitle.trim() || 'Custom resource',
         accent: '#0284c7',
         link: newLink.trim() || 'https://example.com',
-        access: ['Admin', 'Manager', 'Supervisor', 'User'],
+        access: [newAccessLevel],
         department,
       };
 
@@ -114,9 +159,51 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
       setNewSubtitle('');
       setNewLink('');
       setNewType('resource');
+      setNewAccessLevel('User');
     } catch (error) {
       Alert.alert('Save failed', error instanceof Error ? error.message : 'The department workspace could not be saved.');
     }
+  };
+
+  const openEditResource = (resource: CustomModule) => {
+    setEditingResource(resource);
+    setNewTitle(resource.title);
+    setNewSubtitle(resource.subtitle);
+    setNewLink(resource.link);
+    setNewType(resource.type === 'webApp' ? 'webApp' : resource.type === 'report' ? 'report' : 'resource');
+    setNewAccessLevel(getRequiredRole(resource.access));
+    setIsAddOpen(true);
+  };
+
+  const closeResourceModal = () => {
+    setIsAddOpen(false);
+    setEditingResource(null);
+    setNewTitle('');
+    setNewSubtitle('');
+    setNewLink('');
+  };
+
+  const handleDeleteResource = (resource: CustomModule) => {
+    Alert.alert('Delete resource', `Remove ${resource.title}?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            if (isBackendResourceId(resource.id)) {
+              await deleteResourceRecord(resource.id);
+              await removeCustomModule(resource.id);
+              setReloadKey((current) => current + 1);
+            } else {
+              await removeCustomModule(resource.id);
+            }
+          } catch (error) {
+            Alert.alert('Delete failed', error instanceof Error ? error.message : 'Unable to delete this resource.');
+          }
+        },
+      },
+    ]);
   };
 
   if (isLoading) {
@@ -155,7 +242,19 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
           </TouchableOpacity>
 
           {canManageResources ? (
-            <TouchableOpacity onPress={() => setIsAddOpen(true)} activeOpacity={0.8} style={styles.addButton}>
+            <TouchableOpacity
+              onPress={() => {
+                setEditingResource(null);
+                setNewTitle('');
+                setNewSubtitle('');
+                setNewLink('');
+                setNewType('resource');
+                setNewAccessLevel('User');
+                setIsAddOpen(true);
+              }}
+              activeOpacity={0.8}
+              style={styles.addButton}
+            >
               <Text style={styles.addButtonText}>+ Add</Text>
             </TouchableOpacity>
           ) : null}
@@ -187,30 +286,41 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
           <Text style={styles.sectionTitle}>Department modules</Text>
           {departmentModules.length > 0 ? (
             departmentModules.map((item) => (
-              <TouchableOpacity
-                key={item.id}
-                onPress={() => {
-                  if (item.link) {
-                    navigation.navigate('WebAppDetail', {
-                      appName: item.title,
-                      appSubtitle: item.subtitle ?? 'Department resource',
-                      accent: '#0284c7',
-                      url: item.link,
-                    });
-                    return;
-                  }
+              <View key={`${item.id}-${item.title}`}>
+                <TouchableOpacity
+                  onPress={() => {
+                    if (item.link) {
+                      navigation.navigate('WebAppDetail', {
+                        appName: item.title,
+                        appSubtitle: item.subtitle ?? 'Department resource',
+                        accent: '#0284c7',
+                        url: item.link,
+                      });
+                      return;
+                    }
 
-                  Alert.alert('Unable to open resource', 'This department item does not have a destination URL yet.');
-                }}
-                activeOpacity={0.8}
-                style={styles.rowItem}
-              >
-                <View style={styles.rowTextWrap}>
-                  <Text style={styles.rowText}>{item.title}</Text>
-                  <Text style={styles.rowSubText}>{item.subtitle}</Text>
-                </View>
-                <Text style={styles.rowChevron}>{'>'}</Text>
-              </TouchableOpacity>
+                    Alert.alert('Unable to open resource', 'This department item does not have a destination URL yet.');
+                  }}
+                  activeOpacity={0.8}
+                  style={styles.rowItem}
+                >
+                  <View style={styles.rowTextWrap}>
+                    <Text style={styles.rowText}>{item.title}</Text>
+                    <Text style={styles.rowSubText}>{item.subtitle}</Text>
+                  </View>
+                  <Text style={styles.rowChevron}>{'>'}</Text>
+                </TouchableOpacity>
+                {Boolean(item.id) && canManageResource(role, item.access) ? (
+                  <View style={styles.resourceActions}>
+                    <TouchableOpacity onPress={() => openEditResource(item)} style={styles.resourceActionButton}>
+                      <Text style={styles.resourceActionText}>Edit</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => handleDeleteResource(item)} style={[styles.resourceActionButton, styles.deleteActionButton]}>
+                      <Text style={styles.resourceActionText}>Delete</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
+              </View>
             ))
           ) : (
             <EmptyState
@@ -224,7 +334,7 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
       <Modal transparent visible={isAddOpen} animationType="slide" onRequestClose={() => setIsAddOpen(false)}>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Add resource</Text>
+            <Text style={styles.modalTitle}>{editingResource ? 'Edit resource' : 'Add resource'}</Text>
 
             <TextInput
               value={newTitle}
@@ -249,7 +359,22 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
               autoCapitalize="none"
             />
 
+            <Text style={styles.accessLabel}>Viewing level</Text>
             <View style={styles.pillRow}>
+              {(['User', 'Supervisor', 'Manager', 'Admin'] as const)
+                .filter((accessLevel) => (ROLE_RANK[role] ?? 0) >= ROLE_RANK[accessLevel])
+                .map((accessLevel) => (
+                  <TouchableOpacity
+                    key={accessLevel}
+                    onPress={() => setNewAccessLevel(accessLevel)}
+                    style={[styles.pill, newAccessLevel === accessLevel && styles.pillActive]}
+                  >
+                    <Text style={[styles.pillText, newAccessLevel === accessLevel && styles.pillTextActive]}>{accessLevel}</Text>
+                  </TouchableOpacity>
+                ))}
+            </View>
+
+            {!editingResource ? <View style={styles.pillRow}>
               {(['resource', 'report', 'webApp'] as const).map((option) => (
                 <TouchableOpacity
                   key={option}
@@ -260,10 +385,10 @@ export default function DepartmentWorkspaceScreen({ route, navigation }: Departm
                   <Text style={[styles.pillText, newType === option && styles.pillTextActive]}>{option}</Text>
                 </TouchableOpacity>
               ))}
-            </View>
+            </View> : null}
 
             <View style={styles.modalActions}>
-              <TouchableOpacity onPress={() => setIsAddOpen(false)} style={[styles.modalButton, styles.secondaryButton]}>
+              <TouchableOpacity onPress={closeResourceModal} style={[styles.modalButton, styles.secondaryButton]}>
                 <Text style={styles.secondaryButtonText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity onPress={handleAddResource} style={[styles.modalButton, styles.primaryButton]}>
@@ -426,6 +551,28 @@ const styles = StyleSheet.create({
     color: '#64748b',
     fontSize: 20,
   },
+  resourceActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 8,
+    paddingBottom: 8,
+  },
+  resourceActionButton: {
+    minWidth: 62,
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+    backgroundColor: '#5e1232',
+  },
+  deleteActionButton: {
+    backgroundColor: '#b91c1c',
+  },
+  resourceActionText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '700',
+  },
   emptyState: {
     backgroundColor: '#f8fafc',
     borderRadius: 12,
@@ -466,6 +613,12 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     color: '#0f172a',
     fontSize: 14,
+  },
+  accessLabel: {
+    color: '#334155',
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 8,
   },
   pillRow: {
     flexDirection: 'row',

@@ -192,7 +192,7 @@ export async function fetchDashboardData() {
         resource.type === 'webapp' ? 'webApp' : resource.type === 'form' ? 'form' : resource.type === 'report' || resource.type === 'sheet' ? 'report' : 'resource';
 
       return [{
-        id: resource.id == null ? `${department}-${resource.title ?? 'resource'}` : String(resource.id),
+        id: resource.id == null ? '' : String(resource.id),
         type,
         title: resource.title ?? 'Portal resource',
         subtitle: resource.subtitle,

@@ -54,6 +54,9 @@ type ResourceFormState = {
 const ROLE_RANK: Record<string, number> = { user: 1, employee: 1, supervisor: 2, manager: 3, admin: 4 };
 const ROLE_OPTIONS: PortalRoleLevel[] = ['User', 'Supervisor', 'Manager', 'Admin'];
 
+const getRequiredRole = (access: string[]) =>
+  ROLE_OPTIONS.find((candidate) => access.some((roleName) => roleName.trim().toLowerCase() === candidate.toLowerCase())) ?? 'User';
+
 const canAccessRole = (currentRole: string | undefined, requiredRole?: string) => {
   const currentRoleName = currentRole?.trim().toLowerCase() ?? 'user';
   if (currentRoleName === 'admin') {
@@ -66,6 +69,18 @@ const canAccessRole = (currentRole: string | undefined, requiredRole?: string) =
   return current > 0 && needed > 0 && current >= needed;
 };
 
+const canViewRole = (currentRole: string | undefined, requiredRole?: string) =>
+  canAccessRole(currentRole, requiredRole) ||
+  (currentRole?.trim().toLowerCase() === 'manager' && requiredRole?.trim().toLowerCase() === 'admin');
+
+const canManageResource = (currentRole: string | undefined, requiredRole?: string | string[]) =>
+  (Array.isArray(requiredRole)
+    ? requiredRole.some((accessRole) => canAccessRole(currentRole, accessRole))
+    : canAccessRole(currentRole, requiredRole));
+
+const isBackendResourceId = (id?: string): id is string =>
+  typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+
 const normalizeLink = (value?: string) => {
   const trimmed = value?.trim() ?? '';
   if (!trimmed) return '';
@@ -74,7 +89,7 @@ const normalizeLink = (value?: string) => {
 
 export default function HomeScreen({ navigation }: HomeScreenProps) {
   const stackNavigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { role, user, customModules, isFavorite, toggleFavorite, logout, removeCustomModule } = useAppContext();
+  const { role, user, customModules, isFavorite, toggleFavorite, logout, addCustomModule, removeCustomModule } = useAppContext();
   const [dynamicWebApps, setDynamicWebApps] = useState<WebAppItem[]>([]);
   const [dynamicDepartments, setDynamicDepartments] = useState<DepartmentItem[]>([]);
   const [dynamicReports, setDynamicReports] = useState<PortalResource[]>([]);
@@ -125,12 +140,13 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
   const visibleWebApps = useMemo(
     () =>
       [...dynamicWebApps, ...customModules.filter((item) => item.type === 'webApp' && item.title.trim().toLowerCase() !== 'user access matrix').map((item) => ({
+        id: item.id,
         title: item.title,
         subtitle: item.subtitle,
         accent: item.accent,
         access: item.access,
         url: item.link,
-      }))].filter((item) => item.access.some((accessRole) => canAccessRole(role, accessRole))),
+      }))].filter((item) => item.access.some((accessRole) => canViewRole(role, accessRole))),
     [customModules, dynamicWebApps, role],
   );
 
@@ -155,12 +171,12 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
         subtitle: item.subtitle,
         meta: item.type === 'report' ? 'Report' : 'Form',
         accent: item.accent,
-        role: item.access[0] ?? 'User',
+        role: getRequiredRole(item.access),
         category: 'Report' as const,
         url: item.link,
       }))].filter((item) => {
         const isSystemAudit = item.title.trim().toLowerCase() === 'system audit';
-        return (!isSystemAudit || isAdmin) && canAccessRole(role, item.role ?? 'User');
+        return (!isSystemAudit || isAdmin) && canViewRole(role, item.role ?? 'User');
       }),
     [customModules, dynamicReports, isAdmin, role],
   );
@@ -171,7 +187,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
         ...dynamicAdminResources,
         ...(role === 'Admin' || role === 'Manager' ? [{ title: 'Admin Console', subtitle: 'View users and portal modules', meta: 'Admin' as const, accent: '#5e1232', role: 'Admin', category: 'Admin' as const }] : []),
       ].filter((item) =>
-        (item.title === 'Admin Console' && role === 'Manager') || canAccessRole(role, item.role ?? 'Admin'),
+        (item.title === 'Admin Console' && role === 'Manager') || canViewRole(role, item.role ?? 'Admin'),
       ),
     [dynamicAdminResources, isAdmin, role],
   );
@@ -209,9 +225,10 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
     setResourceModalVisible(true);
   };
 
-  const openEditResource = (category: ResourceCategory, resource: { id?: string; title: string; subtitle?: string; url?: string; role?: string }) => {
+  const openEditResource = (category: ResourceCategory, resource: { id?: string | number; title: string; subtitle?: string; url?: string; role?: string }) => {
+    const resourceId = resource.id == null ? undefined : String(resource.id);
     setResourceForm({
-      id: resource.id,
+      id: resourceId,
       title: resource.title,
       description: resource.subtitle ?? '',
       url: resource.url ?? '',
@@ -277,8 +294,22 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
         required_role: resourceForm.requiredRole,
       };
 
-      if (resourceForm.id) {
-        await updateResourceRecord(resourceForm.id, payload);
+      const resourceId = resourceForm.id;
+      if (isBackendResourceId(resourceId)) {
+        await updateResourceRecord(resourceId, payload);
+        await removeCustomModule(resourceId);
+      } else if (resourceId) {
+        const localModule = customModules.find((module) => module.id === resourceId);
+        if (!localModule) {
+          throw new Error('This resource is no longer available. Refresh the list and retry.');
+        }
+        await addCustomModule({
+          ...localModule,
+          title: payload.title,
+          subtitle: payload.description,
+          link: normalizedUrl,
+          access: [resourceForm.requiredRole],
+        });
       } else {
         await createResourceRecord(payload);
       }
@@ -362,7 +393,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
                     });
                   }}
                 />
-                {isAdmin ? (
+                {canManageResource(role, app.access) && app.id ? (
                   <View style={styles.adminActionRow}>
                     <TouchableOpacity style={styles.adminActionButton} onPress={() => openEditResource('webapp', app)}>
                       <Text style={styles.adminActionText}>Edit</Text>
@@ -433,7 +464,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
                   void handleModulePress(item.title, item.url);
                 }}
               />
-              {isAdmin ? (
+              {'id' in item && canManageResource(role, item.role) && item.id ? (
                 <View style={styles.adminActionRow}>
                   <TouchableOpacity style={styles.adminActionButton} onPress={() => openEditResource('report', item)}>
                     <Text style={styles.adminActionText}>Edit</Text>
@@ -472,7 +503,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
                   onFavoritePress={() => toggleFavorite(`Admin:${item.title}`)}
                   onPress={() => handleModulePress(item.title, item.title === 'Admin Console' ? undefined : ('url' in item ? item.url : undefined))}
                 />
-                {isAdmin ? (
+                {'id' in item && canManageResource(role, item.role) && item.id ? (
                   <View style={styles.adminActionRow}>
                     <TouchableOpacity style={styles.adminActionButton} onPress={() => openEditResource('admin', item)}>
                       <Text style={styles.adminActionText}>Edit</Text>
@@ -521,7 +552,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
 
             <Text style={styles.roleLabelHeader}>Viewing level</Text>
             <View style={styles.rolePickerRow}>
-              {ROLE_OPTIONS.map((option) => (
+              {ROLE_OPTIONS.filter((option) => canAccessRole(role, option)).map((option) => (
                 <TouchableOpacity
                   key={option}
                   activeOpacity={0.8}
