@@ -62,6 +62,12 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 app = FastAPI(title="Luna Tech Portal API", version="1.0.0")
 logger = logging.getLogger(__name__)
 
+
+@app.get("/ping")
+def ping() -> Dict[str, str]:
+    return {"status": "alive", "message": "Render server is awake"}
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

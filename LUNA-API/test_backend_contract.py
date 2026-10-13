@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 import main
@@ -35,6 +36,15 @@ from models import PasswordResetConfirm, PasswordResetRequest, PushTokenRegistra
 
 
 class BackendContractTests(unittest.TestCase):
+    def test_ping_is_public_and_returns_alive_status(self):
+        response = TestClient(app).get("/ping")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {"status": "alive", "message": "Render server is awake"},
+        )
+
     def test_seed_data_populates_default_resources(self):
         result = ensure_seed_data()
         self.assertIn("departments", result)
