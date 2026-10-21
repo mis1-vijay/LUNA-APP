@@ -139,6 +139,8 @@ class BackendContractTests(unittest.TestCase):
         self.assertIn("password_reset_tokens_employee_id_uidx", migration)
         self.assertIn("user_push_tokens_employee_id_fkey", migration)
         self.assertIn("'user access matrix'", migration)
+        self.assertIn("resources_type_check", migration)
+        self.assertIn("'module'", migration)
         for notification_field in ("title text", "resource_id uuid", "department_id uuid", "action text"):
             self.assertIn(notification_field, migration)
 
@@ -405,6 +407,18 @@ class BackendContractTests(unittest.TestCase):
         self.assertNotIn("category", normalized)
         self.assertNotIn("role", normalized)
 
+    def test_resource_normalizer_preserves_supported_module_type(self):
+        normalized = normalize_resource_payload(
+            {
+                "title": "Sales order details",
+                "type": "resource",
+                "viewing_level": "Supervisor",
+            },
+            apply_defaults=True,
+        )
+
+        self.assertEqual(normalized["type"], "module")
+
     def test_resource_create_inserts_only_supported_columns(self):
         supabase = MagicMock()
         resources_table = MagicMock()
@@ -427,7 +441,7 @@ class BackendContractTests(unittest.TestCase):
 
         payload = ResourceCreate(
             title="Example",
-            type="webapp",
+            type="resource",
             url="https://example.com",
             department_id=UUID("6b59904d-9918-4f7e-8d1c-609936912d14"),
             category="webapp",
@@ -441,7 +455,7 @@ class BackendContractTests(unittest.TestCase):
         resources_table.insert.assert_called_once_with(
             {
                 "title": "Example",
-                "type": "webapp",
+                "type": "module",
                 "url": "https://example.com",
                 "department_id": "6b59904d-9918-4f7e-8d1c-609936912d14",
                 "viewing_level": "User",

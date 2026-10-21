@@ -599,12 +599,12 @@ const styles = StyleSheet.create({
     paddingBottom: 20,
   },
   greetingCard: {
-    paddingVertical: 18,
+    paddingVertical: 8,
     paddingHorizontal: 4,
   },
   greeting: {
     color: '#0f172a',
-    fontSize: 24,
+    fontSize: 20,
     fontWeight: '800',
     marginBottom: 5,
   },
@@ -613,7 +613,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: 12,
-    marginTop: 22,
+    marginTop: 8,
   },
   sectionHeaderTitleWrap: {
     flex: 1,

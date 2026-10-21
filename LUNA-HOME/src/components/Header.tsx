@@ -192,10 +192,10 @@ const styles = StyleSheet.create({
   },
   brandText: {
     color: '#0f172a',
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: '800',
-    letterSpacing: 0.6,
-    lineHeight: 22,
+    letterSpacing: 0.4,
+    lineHeight: 24,
     flexShrink: 1,
   },
   actions: {

@@ -210,6 +210,33 @@ ALTER TABLE public.resources
     ALTER COLUMN viewing_level SET DEFAULT 'User',
     ALTER COLUMN viewing_level SET NOT NULL;
 
+ALTER TABLE public.resources
+    DROP CONSTRAINT IF EXISTS resources_type_check;
+
+UPDATE public.resources
+SET type = CASE lower(btrim(type))
+        WHEN 'web_app' THEN 'webapp'
+        WHEN 'web-app' THEN 'webapp'
+        WHEN 'app' THEN 'webapp'
+        WHEN 'forms' THEN 'form'
+        WHEN 'reports' THEN 'report'
+        WHEN 'sheets' THEN 'sheet'
+        WHEN 'resource' THEN 'module'
+        WHEN 'resources' THEN 'module'
+        WHEN 'module' THEN 'module'
+        WHEN 'modules' THEN 'module'
+        WHEN 'custom_module' THEN 'module'
+        WHEN 'custom_modules' THEN 'module'
+        WHEN 'tiny_element' THEN 'tiny'
+        WHEN 'tiny_elements' THEN 'tiny'
+        ELSE type
+    END
+WHERE type IS NOT NULL;
+ALTER TABLE public.resources ADD CONSTRAINT resources_type_check CHECK (
+    type IS NULL
+    OR type IN ('webapp', 'report', 'form', 'sheet', 'module', 'department', 'tiny', 'admin')
+) NOT VALID;
+
 -- Clear stale links first so a valid legacy department name can be backfilled.
 UPDATE public.resources AS resource
 SET department_id = NULL
