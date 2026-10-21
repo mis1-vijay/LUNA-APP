@@ -107,8 +107,16 @@ class NotificationCreate(BaseModel):
 
 class NotificationResponse(BaseModel):
     id: UUID
+    title: Optional[str] = None
     message: str
-    target_role_level: RoleLevel
+    resource_id: Optional[UUID] = None
+    department: Optional[str] = None
+    department_id: Optional[UUID] = None
+    viewing_level: RoleLevel = Field(
+        default="User",
+        validation_alias=AliasChoices("viewing_level", "target_role_level"),
+    )
+    action: Optional[Literal["created", "updated"]] = None
     created_at: datetime
     is_read: bool = False
 

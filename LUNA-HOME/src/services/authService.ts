@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import { API_BASE_URL, API_REQUEST_TIMEOUT_MS, AUTH_LOGIN_URL } from '../config/api';
@@ -23,6 +24,7 @@ export type AuthResult = {
 const STORAGE_KEY = 'luna-session';
 const TOKEN_KEY = 'luna-access-token';
 const ROLE_KEY = 'luna-role';
+const BIOMETRIC_CREDENTIALS_KEY = 'luna-biometric-credentials';
 
 const roleMap: Record<string, UserRole> = {
   admin: 'Admin',
@@ -47,6 +49,72 @@ export async function getAccessToken(): Promise<string | null> {
   } catch (error) {
     console.warn('Failed to load access token', error);
     return null;
+  }
+}
+
+export async function isBiometricAuthenticationAvailable(): Promise<boolean> {
+  if (Platform.OS === 'web') {
+    return false;
+  }
+
+  return (await LocalAuthentication.hasHardwareAsync()) && (await LocalAuthentication.isEnrolledAsync());
+}
+
+export async function hasBiometricLogin(): Promise<boolean> {
+  if (!(await isBiometricAuthenticationAvailable())) {
+    return false;
+  }
+
+  return (await SecureStore.getItemAsync(BIOMETRIC_CREDENTIALS_KEY)) !== null;
+}
+
+export async function saveBiometricCredentials(employeeId: string, password: string): Promise<void> {
+  if (Platform.OS === 'web') {
+    throw new Error('Biometric login is only available on iOS and Android.');
+  }
+
+  await SecureStore.setItemAsync(
+    BIOMETRIC_CREDENTIALS_KEY,
+    JSON.stringify({ employeeId: employeeId.trim(), password }),
+  );
+}
+
+export async function loadBiometricCredentials(): Promise<{ employeeId: string; password: string } | null> {
+  if (Platform.OS === 'web') {
+    return null;
+  }
+
+  const raw = await SecureStore.getItemAsync(BIOMETRIC_CREDENTIALS_KEY);
+  if (!raw) {
+    return null;
+  }
+
+  let credentials: unknown;
+  try {
+    credentials = JSON.parse(raw);
+  } catch {
+    await SecureStore.deleteItemAsync(BIOMETRIC_CREDENTIALS_KEY);
+    throw new Error('Saved biometric credentials are invalid. Sign in with your password to set them up again.');
+  }
+
+  if (
+    typeof credentials !== 'object' ||
+    credentials === null ||
+    !('employeeId' in credentials) ||
+    typeof credentials.employeeId !== 'string' ||
+    !('password' in credentials) ||
+    typeof credentials.password !== 'string'
+  ) {
+    await SecureStore.deleteItemAsync(BIOMETRIC_CREDENTIALS_KEY);
+    throw new Error('Saved biometric credentials are invalid. Sign in with your password to set them up again.');
+  }
+
+  return { employeeId: credentials.employeeId, password: credentials.password };
+}
+
+export async function clearBiometricCredentials(): Promise<void> {
+  if (Platform.OS !== 'web') {
+    await SecureStore.deleteItemAsync(BIOMETRIC_CREDENTIALS_KEY);
   }
 }
 

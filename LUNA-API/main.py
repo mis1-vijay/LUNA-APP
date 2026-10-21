@@ -27,7 +27,6 @@ from database import get_supabase
 from models import (
     DepartmentCreate,
     DepartmentResponse,
-    NotificationCreate,
     NotificationResponse,
     PasswordResetConfirm,
     PasswordResetRequest,
@@ -79,7 +78,7 @@ app.add_middleware(
 security = HTTPBearer()
 
 JWT_ALGORITHM = "HS256"
-JWT_EXPIRATION_MINUTES = 60 * 8
+JWT_EXPIRATION_MINUTES = 60 * 24 * 30
 PASSWORD_RESET_EXPIRATION_MINUTES = 10
 PASSWORD_RESET_RESEND_SECONDS = 60
 PASSWORD_RESET_MAX_ATTEMPTS = 5
@@ -204,7 +203,59 @@ def fetch_visible_resources(supabase: Any, user_role: str) -> List[Dict[str, Any
 
 
 def notification_role_allows(user_role: str, target_role_level: str) -> bool:
-    return has_access(user_role, target_role_level)
+    normalized_user_role = normalize_required_role(user_role)
+    normalized_target_role = normalize_required_role(target_role_level)
+    if normalized_user_role in {"Admin", "Manager"}:
+        return normalized_target_role in {"User", "Supervisor", "Manager", "Admin"}
+    if normalized_user_role == "Supervisor":
+        return normalized_target_role in {"User", "Supervisor"}
+    return normalized_user_role == "User" and normalized_target_role == "User"
+
+
+def record_resource_notification(
+    supabase: Any,
+    resource: Dict[str, Any],
+    action: str,
+) -> None:
+    resource_id = resource.get("id")
+    resource_title = str(resource.get("title") or "Resource")
+    department_id = resource.get("department_id")
+    department_name = resource.get("department")
+    viewing_level = normalize_required_role(
+        str(resource.get("viewing_level") or resource.get("target_role_level") or "User")
+    )
+    if department_id is not None and not department_name:
+        try:
+            department_response = (
+                supabase.table("departments")
+                .select("name")
+                .eq("id", str(department_id))
+                .limit(1)
+                .execute()
+            )
+            if department_response.data:
+                department_name = department_response.data[0].get("name")
+        except Exception:
+            logger.exception("Resource notification department name could not be loaded")
+
+    message = (
+        f"New resource added: {resource_title}"
+        if action == "created"
+        else f"Resource updated: {resource_title}"
+    )
+    notification = {
+        "title": resource_title,
+        "message": message,
+        "resource_id": str(resource_id) if resource_id is not None else None,
+        "department": str(department_name) if department_name else None,
+        "department_id": str(department_id) if department_id is not None else None,
+        "target_role_level": viewing_level,
+        "action": action,
+    }
+    try:
+        supabase.table("notifications").insert(notification).execute()
+    except Exception:
+        logger.exception("Resource was changed, but its notification could not be stored")
 
 
 def get_user_by_employee_id(employee_id: str) -> Optional[Dict[str, Any]]:
@@ -955,6 +1006,7 @@ def create_module(payload: ResourceCreate, current_user: Dict[str, Any] = Depend
 
 
 @app.put("/api/modules/{module_id}")
+@app.patch("/api/modules/{module_id}")
 def update_module(module_id: str, payload: ResourceUpdate, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
     return update_resource(module_id, payload, current_user)
 
@@ -977,6 +1029,7 @@ def get_notifications(current_user: Dict[str, Any] = Depends(get_current_user)) 
     supabase = get_supabase()
     try:
         response = supabase.table("notifications").select("*").order("created_at", desc=True).execute()
+        departments_response = supabase.table("departments").select("id,name").execute()
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -984,10 +1037,35 @@ def get_notifications(current_user: Dict[str, Any] = Depends(get_current_user)) 
         ) from exc
 
     user_role = str(current_user.get("role") or "User")
+    normalized_user_department = str(current_user.get("department") or "").strip().casefold()
+    departments_by_id = {
+        str(department.get("id")).casefold(): str(department.get("name") or "").strip().casefold()
+        for department in departments_response.data or []
+        if isinstance(department, dict) and department.get("id") is not None
+    }
+    if normalized_user_department in departments_by_id:
+        normalized_user_department = departments_by_id[normalized_user_department]
+    is_global_department_viewer = normalize_required_role(user_role) in {"Admin", "Manager"}
     return [
         NotificationResponse(**notification)
         for notification in response.data or []
-        if notification_role_allows(user_role, str(notification.get("target_role_level") or ""))
+        if isinstance(notification, dict)
+        and notification_role_allows(
+            user_role,
+            str(notification.get("viewing_level") or notification.get("target_role_level") or ""),
+        )
+        and (
+            is_global_department_viewer
+            or not (notification.get("department_id") or notification.get("department"))
+            or (
+                bool(normalized_user_department)
+                and (
+                    str(notification.get("department") or "").strip().casefold()
+                    or departments_by_id.get(str(notification.get("department_id") or "").casefold(), "")
+                )
+                == normalized_user_department
+            )
+        )
     ]
 
 
@@ -1049,7 +1127,7 @@ def get_audit_logs(current_user: Dict[str, Any] = Depends(require_admin_or_manag
 @app.post("/api/admin/resources", status_code=status.HTTP_201_CREATED)
 def create_resource(payload: ResourceCreate, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
     supabase = get_supabase()
-    data = normalize_resource_payload(payload.model_dump(exclude_none=True), apply_defaults=True)
+    data = normalize_resource_payload(payload.model_dump(mode="json", exclude_none=True), apply_defaults=True)
     ensure_unique_module_title(supabase, str(data.get("title") or ""))
     try:
         response = supabase.table("resources").insert(data).execute()
@@ -1059,14 +1137,7 @@ def create_resource(payload: ResourceCreate, current_user: Dict[str, Any] = Depe
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Resource creation failed")
     created_resource = response.data[0]
 
-    try:
-        notification = NotificationCreate(
-            message=f"New resource: {created_resource.get('title') or data['title']}",
-            target_role_level=normalize_required_role(str(created_resource.get("viewing_level") or data["viewing_level"])),
-        )
-        supabase.table("notifications").insert(notification.model_dump()).execute()
-    except Exception:
-        logger.exception("Resource was created, but its notification could not be stored")
+    record_resource_notification(supabase, {**data, **created_resource}, "created")
 
     record_audit_log(
         supabase,
@@ -1081,11 +1152,12 @@ def create_resource(payload: ResourceCreate, current_user: Dict[str, Any] = Depe
 
 
 @app.put("/api/admin/resources/{resource_id}")
+@app.patch("/api/admin/resources/{resource_id}")
 def update_resource(resource_id: str, payload: ResourceUpdate, current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
     require_admin(current_user)
     supabase = get_supabase()
     normalized_resource_id = ensure_valid_backend_id(resource_id, "Resource ID")
-    data = normalize_resource_payload(payload.model_dump(exclude_none=True))
+    data = normalize_resource_payload(payload.model_dump(mode="json", exclude_none=True))
 
     try:
         existing_response = (
@@ -1112,15 +1184,17 @@ def update_resource(resource_id: str, payload: ResourceUpdate, current_user: Dic
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Resource update failed: {exc}") from exc
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
+    updated_resource = response.data[0]
+    record_resource_notification(supabase, {**existing_response.data[0], **data, **updated_resource}, "updated")
     record_audit_log(
         supabase,
         current_user,
         "resource_updated",
         "resource",
         normalized_resource_id,
-        {"changed_fields": sorted(data.keys()), "title": str(response.data[0].get("title") or "")},
+        {"changed_fields": sorted(data.keys()), "title": str(updated_resource.get("title") or "")},
     )
-    return response.data[0]
+    return updated_resource
 
 
 @app.delete("/api/admin/resources/{resource_id}")

@@ -63,7 +63,7 @@ export default function App() {
   return (
     <AppProvider>
       <SafeAreaProvider>
-        <SafeAreaView style={{ flex: 1, backgroundColor: '#f8fafc' }} edges={['top']}>
+        <SafeAreaView style={{ flex: 1, backgroundColor: '#f8fafc' }} edges={[]}>
           <NavigationContainer>
             <Stack.Navigator
               initialRouteName="Login"

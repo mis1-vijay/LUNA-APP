@@ -31,6 +31,7 @@ import {
   createResourceRecord,
   deleteResourceRecord,
   fetchDashboardData,
+  UnauthorizedError,
   updateResourceRecord,
 } from '../services/portalApi';
 import { RootStackParamList, TabParamList } from '../types';
@@ -120,7 +121,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
       const message = err instanceof Error ? err.message : 'Unable to load dashboard data.';
       setError(message);
 
-      if (/expired|unauthorized|invalid token|401|403/i.test(message)) {
+      if (err instanceof UnauthorizedError) {
         await logout();
         stackNavigation.reset({ index: 0, routes: [{ name: 'Login' }] });
       }
@@ -330,8 +331,8 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.safeArea}>
-        <Header />
+      <SafeAreaView style={styles.safeArea} edges={['left', 'right', 'bottom']}>
+        <Header includeTopInset />
         <View style={styles.centeredState}>
           <ActivityIndicator size="large" color="#0284c7" />
           <Text style={styles.stateText}>Loading portal data…</Text>
@@ -342,8 +343,8 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
 
   if (error) {
     return (
-      <SafeAreaView style={styles.safeArea}>
-        <Header />
+      <SafeAreaView style={styles.safeArea} edges={['left', 'right', 'bottom']}>
+        <Header includeTopInset />
         <View style={styles.centeredState}>
           <ErrorState title="Connection issue" message={error} />
           <TouchableOpacity style={styles.retryButton} onPress={() => void loadData()} activeOpacity={0.9}>
@@ -355,8 +356,8 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
   }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <Header />
+    <SafeAreaView style={styles.safeArea} edges={['left', 'right', 'bottom']}>
+      <Header includeTopInset />
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
         <View style={styles.greetingCard}>
           <Text style={styles.greeting}>{greeting}, {greetingName}</Text>

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -14,11 +14,21 @@ import {
   ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as LocalAuthentication from 'expo-local-authentication';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { type NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import { useAppContext } from '../context/AppContext';
-import { requestPasswordReset, resetPassword, type UserRole } from '../services/authService';
+import {
+  clearBiometricCredentials,
+  hasBiometricLogin,
+  isBiometricAuthenticationAvailable,
+  loadBiometricCredentials,
+  requestPasswordReset,
+  resetPassword,
+  saveBiometricCredentials,
+  type UserRole,
+} from '../services/authService';
 
 const lunaLogo = require('../../luna logo.png');
 
@@ -42,13 +52,102 @@ export default function LoginScreen({ navigation }: LoginScreenProps) {
   const [resetPasswordValue, setResetPasswordValue] = useState('');
   const [resetRequestSent, setResetRequestSent] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
+  const [biometricLoginEnabled, setBiometricLoginEnabled] = useState(false);
+  const loginFlowActive = useRef(false);
   const { login, isAuthenticated, role } = useAppContext();
 
   useEffect(() => {
-    if (isAuthenticated) {
+    let active = true;
+    void hasBiometricLogin()
+      .then((enabled) => {
+        if (active) {
+          setBiometricLoginEnabled(enabled);
+        }
+      })
+      .catch((error) => {
+        console.warn('Failed to check biometric login availability', error);
+        if (active) {
+          Alert.alert(
+            'Biometric login unavailable',
+            error instanceof Error ? error.message : 'Unable to check biometric login on this device.',
+          );
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isAuthenticated && !loginFlowActive.current) {
       navigation.replace(dashboardRouteByRole[role] ?? 'MainTabs');
     }
   }, [isAuthenticated, navigation, role]);
+
+  const navigateAfterLogin = (nextRole: UserRole) => {
+    navigation.replace(dashboardRouteByRole[nextRole] ?? 'MainTabs');
+  };
+
+  const handleBiometricLogin = async () => {
+    setLoading(true);
+    try {
+      const result = await LocalAuthentication.authenticateAsync({
+        promptMessage: 'Sign in to LUNA-HOME',
+        cancelLabel: 'Use password',
+      });
+
+      if (!result.success) {
+        if (result.error !== 'user_cancel' && result.error !== 'system_cancel') {
+          Alert.alert('Biometric authentication failed', 'Verify your identity or sign in with your employee ID and password.');
+        }
+        return;
+      }
+
+      const credentials = await loadBiometricCredentials();
+      if (!credentials) {
+        setBiometricLoginEnabled(false);
+        Alert.alert('Biometric login unavailable', 'Sign in with your password to enable biometric login again.');
+        return;
+      }
+
+      loginFlowActive.current = true;
+      const loginResult = await login(credentials.employeeId, credentials.password);
+      if (!loginResult.success) {
+        loginFlowActive.current = false;
+        if (loginResult.message === 'Invalid employee ID or password.') {
+          await clearBiometricCredentials();
+          setBiometricLoginEnabled(false);
+        }
+        Alert.alert('Login failed', loginResult.message ?? 'Please sign in with your password.');
+        return;
+      }
+
+      navigateAfterLogin(loginResult.role ?? 'User');
+    } catch (error) {
+      loginFlowActive.current = false;
+      console.warn('Biometric login failed', error);
+      Alert.alert(
+        'Biometric login failed',
+        error instanceof Error ? error.message : 'Unable to complete biometric login. You can sign in with your password.',
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDisableBiometricLogin = async () => {
+    try {
+      await clearBiometricCredentials();
+      setBiometricLoginEnabled(false);
+      setEmployeeId('');
+      setPassword('');
+      Alert.alert('Biometric login disabled', 'You can now sign in with a different account.');
+    } catch (error) {
+      console.warn('Failed to disable biometric login', error);
+      Alert.alert('Could not disable biometric login', error instanceof Error ? error.message : 'Please try again.');
+    }
+  };
 
   const handleLogin = async () => {
     if (!employeeId.trim() || !password.trim()) {
@@ -57,16 +156,58 @@ export default function LoginScreen({ navigation }: LoginScreenProps) {
     }
 
     setLoading(true);
+    loginFlowActive.current = true;
 
     try {
       const result = await login(employeeId, password);
 
       if (result.success) {
-        const nextRoute = dashboardRouteByRole[result.role ?? role ?? 'User'] ?? 'MainTabs';
-        navigation.replace(nextRoute);
+        const nextRole = result.role ?? role ?? 'User';
+        if (!biometricLoginEnabled) {
+          let canEnableBiometrics = false;
+          try {
+            canEnableBiometrics = await isBiometricAuthenticationAvailable();
+          } catch (error) {
+            console.warn('Failed to check biometric hardware', error);
+          }
+
+          if (canEnableBiometrics) {
+            Alert.alert(
+              'Enable biometric login?',
+              'Securely save this account on this device so you can sign in with your fingerprint or face.',
+              [
+                { text: 'Not now', style: 'cancel', onPress: () => navigateAfterLogin(nextRole) },
+                {
+                  text: 'Enable',
+                  onPress: () => {
+                    void (async () => {
+                      try {
+                        await saveBiometricCredentials(employeeId, password);
+                        setBiometricLoginEnabled(true);
+                      } catch (error) {
+                        console.warn('Failed to save biometric credentials', error);
+                        Alert.alert(
+                          'Could not enable biometric login',
+                          error instanceof Error ? error.message : 'Please try again later.',
+                        );
+                      } finally {
+                        navigateAfterLogin(nextRole);
+                      }
+                    })();
+                  },
+                },
+              ],
+              { cancelable: false },
+            );
+            return;
+          }
+        }
+
+        navigateAfterLogin(nextRole);
         return;
       }
 
+      loginFlowActive.current = false;
       if (result.message?.toLowerCase().includes('unauthorized') || result.message?.toLowerCase().includes('invalid')) {
         Alert.alert('Unauthorized', result.message ?? 'Invalid employee ID or password.');
         return;
@@ -74,6 +215,7 @@ export default function LoginScreen({ navigation }: LoginScreenProps) {
 
       Alert.alert('Login failed', result.message ?? 'Please try again.');
     } catch (error) {
+      loginFlowActive.current = false;
       Alert.alert('Network error', 'Unable to reach the Luna API. Please check your backend URL and try again.');
       console.warn('Login error', error);
     } finally {
@@ -151,6 +293,33 @@ export default function LoginScreen({ navigation }: LoginScreenProps) {
           </View>
 
           <View style={styles.form}>
+            {biometricLoginEnabled ? (
+              <>
+                <TouchableOpacity
+                  style={styles.biometricButton}
+                  onPress={() => void handleBiometricLogin()}
+                  activeOpacity={0.9}
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <ActivityIndicator color="#5e1232" size="small" />
+                  ) : (
+                    <>
+                      <Ionicons name="finger-print-outline" size={22} color="#5e1232" />
+                      <Text style={styles.biometricButtonText}>LOGIN WITH BIOMETRICS</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={() => void handleDisableBiometricLogin()}
+                  disabled={loading}
+                >
+                  <Text style={styles.switchAccountText}>Switch account / disable biometric login</Text>
+                </TouchableOpacity>
+              </>
+            ) : null}
+
             <TextInput
               value={employeeId}
               onChangeText={setEmployeeId}
@@ -377,6 +546,31 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     letterSpacing: 0.9,
+  },
+  biometricButton: {
+    backgroundColor: '#ffffff',
+    borderColor: '#5e1232',
+    borderWidth: 1.5,
+    borderRadius: 12,
+    padding: 14,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 20,
+  },
+  biometricButtonText: {
+    color: '#5e1232',
+    fontSize: 15,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  switchAccountText: {
+    color: '#1d4ed8',
+    textAlign: 'center',
+    marginBottom: 20,
+    fontSize: 13,
+    fontWeight: '600',
   },
   forgotText: {
     color: '#1d4ed8',

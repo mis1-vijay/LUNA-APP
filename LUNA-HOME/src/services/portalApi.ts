@@ -116,6 +116,13 @@ const normalizeApiError = (error: unknown, fallback = 'Unable to reach the Luna 
   return fallback;
 };
 
+export class UnauthorizedError extends Error {
+  constructor() {
+    super('Your session expired. Please sign in again.');
+    this.name = 'UnauthorizedError';
+  }
+}
+
 const buildDepartmentCard = (department: DashboardDepartment): DepartmentItem => {
   const name = department.name ?? department.title ?? 'Department';
   const roleAccess = normalizeAccessList(department.access);
@@ -200,6 +207,14 @@ async function loadDashboardData(token: string) {
     ]);
 
     if (!resourcesResponse.ok || !departmentsResponse.ok) {
+      const unauthorizedResponse = [resourcesResponse, departmentsResponse].find(
+        (response) => response.status === 401,
+      );
+      if (unauthorizedResponse) {
+        await clearSession();
+        throw new UnauthorizedError();
+      }
+
       const failedResponse = !resourcesResponse.ok ? resourcesResponse : departmentsResponse;
       const body = await failedResponse.json().catch(() => ({}));
       throw new Error(body.detail ?? 'Unable to load dashboard data.');
@@ -330,6 +345,10 @@ async function loadDashboardData(token: string) {
       ],
     };
   } catch (error) {
+    if (error instanceof UnauthorizedError) {
+      throw error;
+    }
+
     if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
       throw new Error(`Dashboard request timed out after ${API_REQUEST_TIMEOUT_MS / 1000} seconds. Connect your phone to the same Wi-Fi and confirm ${API_BASE_URL}/docs opens, then retry.`);
     }
@@ -477,6 +496,11 @@ async function requestBackend<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 
     const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
 
     if (!response.ok) {
+      if (response.status === 401) {
+        await clearSession();
+        throw new UnauthorizedError();
+      }
+
       const detail = [payload.detail, payload.message, payload.error].find(
         (value): value is string => typeof value === 'string' && value.trim().length > 0,
       );
@@ -485,16 +509,15 @@ async function requestBackend<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 
 
     return payload as T;
   } catch (error) {
+    if (error instanceof UnauthorizedError) {
+      throw error;
+    }
+
     if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
       throw new Error(`API request timed out after ${API_REQUEST_TIMEOUT_MS / 1000} seconds.`);
     }
 
     const message = normalizeApiError(error, 'Unable to reach the Luna API. Please try again later.');
-
-    if (/invalid or expired token|unauthorized|401|403/i.test(message)) {
-      await clearSession();
-      throw new Error('Your session expired. Please sign in again.');
-    }
 
     throw new Error(message || 'Unable to reach the Luna API. Please try again later.');
   } finally {
@@ -512,8 +535,13 @@ export async function fetchDepartmentResources(departmentId?: string): Promise<D
 
 export type PortalNotification = {
   id: string;
+  title: string | null;
   message: string;
-  target_role_level: 'User' | 'Supervisor' | 'Manager' | 'Admin';
+  resource_id: string | null;
+  department: string | null;
+  department_id: string | null;
+  viewing_level: 'User' | 'Supervisor' | 'Manager' | 'Admin';
+  action: 'created' | 'updated' | null;
   created_at: string;
   is_read: boolean;
 };

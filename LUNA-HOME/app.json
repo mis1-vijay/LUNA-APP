@@ -21,6 +21,12 @@
       "favicon": "./assets/luna-logo.png"
     },
     "plugins": [
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Allow LUNA-HOME to use Face ID to unlock your account."
+        }
+      ],
       "expo-secure-store",
       "expo-notifications"
     ],

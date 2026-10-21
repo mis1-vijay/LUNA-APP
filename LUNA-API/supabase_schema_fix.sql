@@ -352,18 +352,28 @@ ALTER TABLE public.password_reset_tokens
 
 CREATE TABLE IF NOT EXISTS public.notifications (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    title text,
     message text NOT NULL CHECK (length(trim(message)) > 0),
     target_role_level text NOT NULL CHECK (
         target_role_level IN ('User', 'Supervisor', 'Manager', 'Admin')
     ),
+    resource_id uuid,
+    department text,
+    department_id uuid,
+    action text CHECK (action IN ('created', 'updated')),
     created_at timestamptz NOT NULL DEFAULT now(),
     is_read boolean NOT NULL DEFAULT false
 );
 
 ALTER TABLE public.notifications
     ADD COLUMN IF NOT EXISTS id uuid DEFAULT gen_random_uuid(),
+    ADD COLUMN IF NOT EXISTS title text,
     ADD COLUMN IF NOT EXISTS message text,
     ADD COLUMN IF NOT EXISTS target_role_level text NOT NULL DEFAULT 'User',
+    ADD COLUMN IF NOT EXISTS resource_id uuid,
+    ADD COLUMN IF NOT EXISTS department text,
+    ADD COLUMN IF NOT EXISTS department_id uuid,
+    ADD COLUMN IF NOT EXISTS action text,
     ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
     ADD COLUMN IF NOT EXISTS is_read boolean NOT NULL DEFAULT false;
 
@@ -379,6 +389,9 @@ WHERE created_at IS NULL;
 UPDATE public.notifications
 SET is_read = false
 WHERE is_read IS NULL;
+UPDATE public.notifications
+SET action = NULL
+WHERE action IS NOT NULL AND action NOT IN ('created', 'updated');
 
 UPDATE public.notifications
 SET target_role_level = CASE lower(btrim(target_role_level))
@@ -397,6 +410,12 @@ ALTER TABLE public.notifications
         CHECK (target_role_level IN ('User', 'Supervisor', 'Manager', 'Admin'))
         NOT VALID;
 ALTER TABLE public.notifications VALIDATE CONSTRAINT notifications_target_role_level_check;
+ALTER TABLE public.notifications
+    DROP CONSTRAINT IF EXISTS notifications_action_check,
+    ADD CONSTRAINT notifications_action_check
+        CHECK (action IS NULL OR action IN ('created', 'updated'))
+        NOT VALID;
+ALTER TABLE public.notifications VALIDATE CONSTRAINT notifications_action_check;
 CREATE UNIQUE INDEX IF NOT EXISTS notifications_id_uidx ON public.notifications (id);
 ALTER TABLE public.notifications
     ALTER COLUMN id SET NOT NULL,

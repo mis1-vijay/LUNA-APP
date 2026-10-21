@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import secrets
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from uuid import UUID
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -138,6 +139,8 @@ class BackendContractTests(unittest.TestCase):
         self.assertIn("password_reset_tokens_employee_id_uidx", migration)
         self.assertIn("user_push_tokens_employee_id_fkey", migration)
         self.assertIn("'user access matrix'", migration)
+        for notification_field in ("title text", "resource_id uuid", "department_id uuid", "action text"):
+            self.assertIn(notification_field, migration)
 
     def test_all_resource_mutations_require_admin(self):
         mutation_routes = [
@@ -240,8 +243,14 @@ class BackendContractTests(unittest.TestCase):
     def test_only_admin_can_update_or_delete_resources(self):
         resource_id = "a658e481-c235-4cc5-b42a-3773bd68d2ce"
         resource_table = MagicMock()
+        notifications_table = MagicMock()
+        audit_table = MagicMock()
         supabase = MagicMock()
-        supabase.table.side_effect = lambda name: resource_table if name == "resources" else MagicMock()
+        supabase.table.side_effect = lambda name: {
+            "resources": resource_table,
+            "notifications": notifications_table,
+            "audit_logs": audit_table,
+        }[name]
         resource_table.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
             {"id": resource_id, "title": "User resource", "viewing_level": "User"}
         ]
@@ -269,11 +278,27 @@ class BackendContractTests(unittest.TestCase):
                 {"role": "Admin", "employee_id": "ADMIN1"},
             )
         self.assertEqual(result, updated_resource)
+        notifications_table.insert.assert_called_once_with(
+            {
+                "title": "User resource",
+                "message": "Resource updated: User resource",
+                "resource_id": resource_id,
+                "department": None,
+                "department_id": None,
+                "target_role_level": "Manager",
+                "action": "updated",
+            }
+        )
 
     def test_notification_role_filter_is_strictly_hierarchical(self):
         self.assertTrue(notification_role_allows("Manager", "Manager"))
+        self.assertTrue(notification_role_allows("Manager", "Admin"))
         self.assertTrue(notification_role_allows("Admin", "Manager"))
-        self.assertFalse(notification_role_allows("Manager", "Admin"))
+        self.assertTrue(notification_role_allows("Supervisor", "Supervisor"))
+        self.assertTrue(notification_role_allows("Supervisor", "User"))
+        self.assertFalse(notification_role_allows("Supervisor", "Manager"))
+        self.assertFalse(notification_role_allows("Supervisor", "Admin"))
+        self.assertTrue(notification_role_allows("User", "User"))
         self.assertFalse(notification_role_allows("User", "Supervisor"))
 
     def test_notifications_endpoint_filters_for_authenticated_role(self):
@@ -293,12 +318,75 @@ class BackendContractTests(unittest.TestCase):
                 "created_at": datetime.now(timezone.utc),
                 "is_read": False,
             },
+            {
+                "id": "c868e481-c235-4cc5-b42a-3773bd68d2d0",
+                "title": "Department resource",
+                "message": "Resource updated: Department resource",
+                "target_role_level": "Supervisor",
+                "resource_id": "d868e481-c235-4cc5-b42a-3773bd68d2d1",
+                "department_id": "e868e481-c235-4cc5-b42a-3773bd68d2d2",
+                "department": "Automation",
+                "action": "updated",
+                "created_at": datetime.now(timezone.utc),
+                "is_read": False,
+            },
+            {
+                "id": "f868e481-c235-4cc5-b42a-3773bd68d2d3",
+                "title": "Other department resource",
+                "message": "New resource added: Other department resource",
+                "target_role_level": "User",
+                "department_id": "0868e481-c235-4cc5-b42a-3773bd68d2d4",
+                "department": "Machining",
+                "action": "created",
+                "created_at": datetime.now(timezone.utc),
+                "is_read": False,
+            },
+            {
+                "id": "1868e481-c235-4cc5-b42a-3773bd68d2d5",
+                "title": "Global user resource",
+                "message": "New resource added: Global user resource",
+                "target_role_level": "User",
+                "created_at": datetime.now(timezone.utc),
+                "is_read": False,
+            },
+        ]
+        supabase.table.return_value.select.return_value.execute.return_value.data = [
+            {"id": "e868e481-c235-4cc5-b42a-3773bd68d2d2", "name": "Automation"},
+            {"id": "0868e481-c235-4cc5-b42a-3773bd68d2d4", "name": "Machining"},
         ]
 
         with patch("main.get_supabase", return_value=supabase):
-            results = get_notifications({"role": "Manager"})
+            results = get_notifications({"role": "Supervisor", "department": "Automation"})
 
-        self.assertEqual([item.message for item in results], ["Manager notice"])
+        self.assertEqual(
+            [item.message for item in results],
+            ["Resource updated: Department resource", "New resource added: Global user resource"],
+        )
+        self.assertEqual(results[0].viewing_level, "Supervisor")
+        self.assertEqual(results[0].action, "updated")
+        self.assertEqual(results[0].department, "Automation")
+
+        with patch("main.get_supabase", return_value=supabase):
+            manager_results = get_notifications({"role": "Manager", "department": "Automation"})
+
+        self.assertEqual(
+            {item.message for item in manager_results},
+            {
+                "Manager notice",
+                "Admin notice",
+                "Resource updated: Department resource",
+                "New resource added: Other department resource",
+                "New resource added: Global user resource",
+            },
+        )
+
+        with patch("main.get_supabase", return_value=supabase):
+            user_results = get_notifications({"role": "User", "department": "Automation"})
+
+        self.assertEqual(
+            [item.message for item in user_results],
+            ["New resource added: Global user resource"],
+        )
 
     def test_resource_normalizer_maps_legacy_link_without_emitting_unsupported_fields(self):
         normalized = normalize_resource_payload(
@@ -323,13 +411,16 @@ class BackendContractTests(unittest.TestCase):
         notifications_table = MagicMock()
         audit_table = MagicMock()
         push_tokens_table = MagicMock()
+        departments_table = MagicMock()
         supabase.table.side_effect = lambda table_name: {
             "resources": resources_table,
             "notifications": notifications_table,
             "audit_logs": audit_table,
             "user_push_tokens": push_tokens_table,
+            "departments": departments_table,
         }[table_name]
         resources_table.select.return_value.execute.return_value.data = []
+        departments_table.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
         inserted_resource = {"id": "a658e481-c235-4cc5-b42a-3773bd68d2ce", "title": "Example"}
         resources_table.insert.return_value.execute.return_value.data = [inserted_resource]
         push_tokens_table.select.return_value.execute.return_value.data = []
@@ -338,6 +429,7 @@ class BackendContractTests(unittest.TestCase):
             title="Example",
             type="webapp",
             url="https://example.com",
+            department_id=UUID("6b59904d-9918-4f7e-8d1c-609936912d14"),
             category="webapp",
             link="https://example.com",
         )
@@ -351,14 +443,19 @@ class BackendContractTests(unittest.TestCase):
                 "title": "Example",
                 "type": "webapp",
                 "url": "https://example.com",
+                "department_id": "6b59904d-9918-4f7e-8d1c-609936912d14",
                 "viewing_level": "User",
             }
         )
         notifications_table.insert.assert_called_once_with(
             {
-                "message": "New resource: Example",
+                "title": "Example",
+                "message": "New resource added: Example",
+                "resource_id": inserted_resource["id"],
+                "department": None,
+                "department_id": "6b59904d-9918-4f7e-8d1c-609936912d14",
                 "target_role_level": "User",
-                "is_read": False,
+                "action": "created",
             }
         )
         audit_table.insert.assert_called_once_with(
@@ -371,6 +468,9 @@ class BackendContractTests(unittest.TestCase):
                 "details": {"title": "Example"},
             }
         )
+
+    def test_access_token_expiration_is_thirty_days(self):
+        self.assertEqual(main.JWT_EXPIRATION_MINUTES, 60 * 24 * 30)
 
     def test_push_token_registration_is_scoped_to_authenticated_user(self):
         supabase = MagicMock()
